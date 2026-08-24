@@ -1,0 +1,61 @@
+Tillwise — self-host
+====================
+
+Camera-first grocery ledger. No accounts. Detect on the phone, read in the
+background, collate aisle stickers with the till tape.
+
+Environment (never hard-coded in the app)
+-----------------------------------------
+Copy these into the process environment. Environment wins over the Settings form.
+
+  LLM_BASE_URL     OpenAI-compatible base, no trailing /v1
+                   e.g. http://192.168.1.2:8088
+  VISION_MODEL     Vision LLM for labels + receipts
+                   e.g. Qwen3-VL-8B
+  TEXT_MODEL       Text LLM for collation / name grouping
+                   e.g. Qwen3.5-9B
+                   If unset, VISION_MODEL is used.
+  LLM_API_KEY      Optional bearer token for the local server
+  XAI_API_KEY      Optional. Only if you want Grok as a reader/collate option.
+  DATABASE_URL     Optional Postgres URL. If unset, PGLite (embedded) is used.
+
+The app calls:
+
+  ${LLM_BASE_URL}/v1/chat/completions
+
+with model = VISION_MODEL (photos) or TEXT_MODEL (collation). Same shape as
+llama-swap / vLLM / OpenAI.
+
+If LLM_BASE_URL is not in the environment, Settings can save the same values
+into the local database. Setting the env vars locks the form.
+
+On-device engines
+-----------------
+  TensorFlow.js    CDN: tfjs 4.20.0 + MobileNet v1 0.25 224. First load ~5–10 MB.
+  PP-OCRv6         First enable in Settings downloads from Hugging Face:
+                     PaddlePaddle/PP-OCRv6_small_det_onnx
+                     PaddlePaddle/PP-OCRv6_small_rec_onnx
+                   Packed as uncompressed ustar (inference.onnx + inference.yml)
+                   and cached in the browser (~30 MB). Optional override:
+                   drop PP-OCRv6_small_{det,rec}.tar in public/models/.
+                   WASM runtime from jsDelivr (onnxruntime-web 1.21.0).
+
+Run
+---
+  npm install
+  LLM_BASE_URL=http://192.168.1.2:8088 \
+  VISION_MODEL=Qwen3-VL-8B \
+  TEXT_MODEL=Qwen3.5-9B \
+  npm run dev
+
+Listens on 0.0.0.0:8080. Open it from your phone on the same network.
+
+Settings order (detect → read → collate)
+----------------------------------------
+  Detect:  TensorFlow.js → PP-OCRv6 → shape+barcode → barcode → manual
+  Read:    local vision LLM → PP-OCRv6 on-device → Grok → browser text
+  Collate: local TEXT_MODEL → Grok
+
+Receipts always use a vision LLM (local or Grok). PP-OCR is a label engine.
+
+Defaults: detect = shape (no download), read = local, collate = local.

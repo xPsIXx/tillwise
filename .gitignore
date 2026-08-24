@@ -1,0 +1,17 @@
+node_modules/
+.vercel/
+.tanstack/
+screenshots/
+attachments/
+artifacts/
+tillwise.zip
+.env
+.env.*
+*.log
+.DS_Store
+public/models/*.tar
+.ssh-tillwise/
+.grok/*
+!.grok/app-env.json
+AGENTS.md
+.node_modules.lock
