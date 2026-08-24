@@ -189,7 +189,7 @@ export function CameraView({
         });
         if (cancelled) return;
         if (!ok) {
-          setEngine({ label: "PP-OCRv6 failed to load", pct: 0 });
+          setEngine({ label: "PP-OCRv6 failed to load", pct: 0, error: true });
           toast.error("PP-OCRv6 did not load. Try shape detect or another reader.");
         } else {
           setEngine({ label: "PP-OCRv6 ready", pct: 100 });

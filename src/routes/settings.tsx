@@ -49,14 +49,28 @@ function SettingsPage() {
     let cancelled = false;
     async function boot() {
       if (settings.detect === "tensorflow" && !tfReady()) {
-        await loadTfjs((p) => {
+        const ok = await loadTfjs((p) => {
           if (!cancelled) setEngine(p);
         });
+        if (cancelled) return;
+        if (!ok) {
+          setEngine({ label: "TensorFlow.js failed to load", pct: 0, error: true });
+          return;
+        }
       }
       if ((settings.detect === "ppocr" || settings.read === "ppocr") && !ppocrReady()) {
-        await loadPpocr((p) => {
+        const ok = await loadPpocr((p) => {
           if (!cancelled) setEngine(p);
         });
+        if (cancelled) return;
+        if (!ok) {
+          setEngine((prev) =>
+            prev?.error
+              ? prev
+              : { label: "PP-OCRv6 failed to load", pct: 0, error: true },
+          );
+          return;
+        }
       }
       if (!cancelled && (tfReady() || ppocrReady())) {
         window.setTimeout(() => {
@@ -110,13 +124,32 @@ function SettingsPage() {
 
       {engine && (
         <div className="mt-5 rounded-xl bg-surface px-4 py-3 shadow-[var(--shadow-border)]">
-          <p className="text-sm">{engine.label}</p>
-          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-elevated">
-            <div
-              className="h-full bg-accent transition-[width] duration-200"
-              style={{ width: `${engine.pct}%` }}
-            />
-          </div>
+          <p className={engine.error ? "text-sm text-red-600" : "text-sm"}>{engine.label}</p>
+          {!engine.error && (
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-elevated">
+              <div
+                className="h-full bg-accent transition-[width] duration-200"
+                style={{ width: `${engine.pct}%` }}
+              />
+            </div>
+          )}
+          {engine.error && (
+            <Button
+              type="button"
+              className="mt-3"
+              onClick={() => {
+                setEngine({ label: "Retrying PP-OCRv6…", pct: 4 });
+                void loadPpocr((p) => setEngine(p)).then((ok) => {
+                  if (ok) {
+                    setEngine({ label: "PP-OCRv6 ready", pct: 100 });
+                    window.setTimeout(() => setEngine(null), 800);
+                  }
+                });
+              }}
+            >
+              Try again
+            </Button>
+          )}
         </div>
       )}
 
@@ -338,7 +371,7 @@ function SettingsPage() {
           />
           <Row
             k="PP-OCRv6"
-            v="On this phone. paddleocr-js WASM. Enabling it downloads det + rec from Hugging Face, packs them as tars, and caches them (~30 MB). Drop files in public/models/ to skip the download."
+            v="On this phone. Enabling it downloads det + rec from Hugging Face through this app (~30 MB), then caches them. The engine itself is same-origin WASM — no jsDelivr hang. Drop tars in public/models/ to skip the Hugging Face step."
           />
           <Row
             k="Local LLM"

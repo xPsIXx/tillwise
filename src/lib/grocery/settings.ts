@@ -23,7 +23,7 @@ export const DETECT_OPTIONS: { id: DetectMode; title: string; body: string }[] =
   {
     id: "ppocr",
     title: "PP-OCRv6",
-    body: "On this phone. Finds text in the aim box. First enable downloads PP-OCRv6 from Hugging Face (~30 MB), then it stays cached.",
+    body: "On this phone. Finds text in the aim box. First enable downloads from Hugging Face (~30 MB) then compiles WASM — keep this tab open. Cached after that.",
   },
   {
     id: "shape",

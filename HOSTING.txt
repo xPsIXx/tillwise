@@ -32,13 +32,17 @@ into the local database. Setting the env vars locks the form.
 On-device engines
 -----------------
   TensorFlow.js    CDN: tfjs 4.20.0 + MobileNet v1 0.25 224. First load ~5–10 MB.
-  PP-OCRv6         First enable in Settings downloads from Hugging Face:
+  PP-OCRv6         First enable in Settings downloads from Hugging Face
+                   via a same-origin proxy (the phone never talks to
+                   huggingface.co — that was hanging the published preview):
                      PaddlePaddle/PP-OCRv6_small_det_onnx
                      PaddlePaddle/PP-OCRv6_small_rec_onnx
                    Packed as uncompressed ustar (inference.onnx + inference.yml)
                    and cached in the browser (~30 MB). Optional override:
                    drop PP-OCRv6_small_{det,rec}.tar in public/models/.
-                   WASM runtime from jsDelivr (onnxruntime-web 1.21.0).
+                   Engine JS + ORT wasm are vendored same-origin:
+                     npm run build:ppocr
+                   (runs on postinstall). WASM uses 1 thread — no COOP/COEP.
 
 Run
 ---

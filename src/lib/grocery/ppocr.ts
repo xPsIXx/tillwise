@@ -3,22 +3,24 @@ import type { EngineProgress } from "./tfjs";
 
 const LOCAL_DET = "/models/PP-OCRv6_small_det.tar";
 const LOCAL_REC = "/models/PP-OCRv6_small_rec.tar";
-const ORT_WASM = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/";
-const SDK = "https://cdn.jsdelivr.net/npm/@paddleocr/paddleocr-js@0.4.2/+esm";
-const CACHE_NAME = "tillwise-ppocr-v6-small-1";
+const ENGINE_JS = "/ppocr/paddleocr.bundle.js";
+const ORT_WASM = "/ort/";
+const CACHE_NAME = "tillwise-ppocr-v6-small-2";
 
 const HF = {
   det: {
     name: "PP-OCRv6_small_det",
     cacheKey: "https://tillwise.local/models/PP-OCRv6_small_det.tar",
-    onnx: "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/main/inference.onnx",
-    yml: "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/main/inference.yml",
+    localPath: LOCAL_DET,
+    onnxKind: "det-onnx",
+    ymlKind: "det-yml",
   },
   rec: {
     name: "PP-OCRv6_small_rec",
     cacheKey: "https://tillwise.local/models/PP-OCRv6_small_rec.tar",
-    onnx: "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/main/inference.onnx",
-    yml: "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/main/inference.yml",
+    localPath: LOCAL_REC,
+    onnxKind: "rec-onnx",
+    ymlKind: "rec-yml",
   },
 } as const;
 
@@ -42,8 +44,28 @@ type PaddleCtor = {
   create: (opts: Record<string, unknown>) => Promise<PaddleInstance>;
 };
 
+declare global {
+  interface Window {
+    PaddleOCRJS?: { PaddleOCR?: PaddleCtor };
+    PaddleOCR?: { PaddleOCR?: PaddleCtor };
+    ort?: { env?: { wasm?: { numThreads?: number; proxy?: boolean } } };
+  }
+}
+
 let instance: PaddleInstance | null = null;
 let loading: Promise<boolean> | null = null;
+let lastError: string | null = null;
+const progressListeners = new Set<(p: EngineProgress) => void>();
+
+function emitProgress(p: EngineProgress) {
+  for (const fn of progressListeners) {
+    try {
+      fn(p);
+    } catch {
+      /* ignore subscriber errors */
+    }
+  }
+}
 
 export type PpocrHit = {
   ready: boolean;
@@ -54,6 +76,10 @@ export type PpocrHit = {
 
 export function ppocrReady(): boolean {
   return Boolean(instance);
+}
+
+export function ppocrLastError(): string | null {
+  return lastError;
 }
 
 function encodeOctal(n: number, width: number): string {
@@ -98,7 +124,7 @@ async function fetchBytes(
   onChunk?: (got: number, total: number | null) => void,
 ): Promise<Uint8Array> {
   const res = await fetch(url, { redirect: "follow" });
-  if (!res.ok) throw new Error(`Download failed (${res.status})`);
+  if (!res.ok) throw new Error(`Download failed (${res.status}) for ${url}`);
   const total = Number(res.headers.get("content-length")) || null;
   if (!res.body || !onChunk) {
     const buf = new Uint8Array(await res.arrayBuffer());
@@ -124,16 +150,13 @@ async function fetchBytes(
   return out;
 }
 
-async function looksLikeTar(url: string): Promise<boolean> {
+async function localTarExists(path: string): Promise<boolean> {
   try {
-    const res = await fetch(url, { method: "GET", headers: { Range: "bytes=0-261" } });
-    if (!res.ok) return false;
+    const res = await fetch(path, { method: "GET", headers: { Range: "bytes=0-16" } });
+    if (!(res.ok || res.status === 206)) return false;
     const type = res.headers.get("content-type") ?? "";
     if (type.includes("text/html")) return false;
-    const buf = new Uint8Array(await res.arrayBuffer());
-    if (buf.length < 262) return false;
-    const magic = String.fromCharCode(...buf.slice(257, 262));
-    return magic === "ustar";
+    return true;
   } catch {
     return false;
   }
@@ -166,25 +189,27 @@ async function saveTar(kind: Kind, blob: Blob) {
   }
 }
 
+function hfProxy(kind: string): string {
+  return `/api/ppocr/hf?kind=${encodeURIComponent(kind)}`;
+}
+
 async function downloadAndPack(
   kind: Kind,
   onProgress?: (p: EngineProgress) => void,
 ): Promise<string> {
   const spec = HF[kind];
   const label = kind === "det" ? "detection" : "recognition";
-  const base = kind === "det" ? 12 : 48;
+  const base = kind === "det" ? 18 : 48;
   onProgress?.({ label: `Downloading ${label} model from Hugging Face…`, pct: base });
-  const [onnx, yml] = await Promise.all([
-    fetchBytes(spec.onnx, (got, total) => {
-      const frac = total ? got / total : 0.5;
-      onProgress?.({
-        label: `Downloading ${label} model ${total ? `${Math.round(frac * 100)}%` : "…"}`,
-        pct: base + Math.round(frac * 22),
-      });
-    }),
-    fetchBytes(spec.yml),
-  ]);
-  onProgress?.({ label: `Packing ${label} model…`, pct: base + 24 });
+  const onnx = await fetchBytes(hfProxy(spec.onnxKind), (got, total) => {
+    const frac = total ? got / total : 0.5;
+    onProgress?.({
+      label: `Downloading ${label} model ${total ? `${Math.round(frac * 100)}%` : "…"}`,
+      pct: base + Math.round(frac * 18),
+    });
+  });
+  const yml = await fetchBytes(hfProxy(spec.ymlKind));
+  onProgress?.({ label: `Packing ${label} model…`, pct: base + 20 });
   const tar = packUstar([
     { name: "inference.onnx", data: onnx },
     { name: "inference.yml", data: yml },
@@ -193,42 +218,134 @@ async function downloadAndPack(
   return URL.createObjectURL(tar);
 }
 
-async function resolveTar(
+async function fetchLocalTar(
   kind: Kind,
-  localPath: string,
   onProgress?: (p: EngineProgress) => void,
 ): Promise<string> {
-  if (await looksLikeTar(localPath)) return localPath;
+  const spec = HF[kind];
+  const label = kind === "det" ? "detection" : "recognition";
+  const base = kind === "det" ? 18 : 48;
+  const bytes = await fetchBytes(spec.localPath, (got, total) => {
+    const frac = total ? got / total : 0.5;
+    onProgress?.({
+      label: `Loading ${label} model ${total ? `${Math.round(frac * 100)}%` : "…"}`,
+      pct: base + Math.round(frac * 18),
+    });
+  });
+  const blob = new Blob([bytes as BlobPart], { type: "application/x-tar" });
+  await saveTar(kind, blob);
+  return URL.createObjectURL(blob);
+}
+
+async function resolveTar(
+  kind: Kind,
+  onProgress?: (p: EngineProgress) => void,
+): Promise<string> {
   const cached = await tarFromCache(kind);
   if (cached) return cached;
+  if (await localTarExists(HF[kind].localPath)) {
+    return fetchLocalTar(kind, onProgress);
+  }
   return downloadAndPack(kind, onProgress);
 }
 
+function loadScript(src: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (window.PaddleOCRJS?.PaddleOCR || window.PaddleOCR?.PaddleOCR) {
+      resolve();
+      return;
+    }
+    const existing = document.querySelector("script[data-tillwise-ppocr]");
+    if (existing) {
+      existing.addEventListener("load", () => resolve());
+      existing.addEventListener("error", () =>
+        reject(new Error("PP-OCR engine failed to load")),
+      );
+      return;
+    }
+    const s = document.createElement("script");
+    s.src = src;
+    s.async = true;
+    s.dataset.tillwisePpocr = "1";
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("PP-OCR engine failed to load"));
+    document.head.appendChild(s);
+  });
+}
+
+function paddleCtor(): PaddleCtor | null {
+  return window.PaddleOCRJS?.PaddleOCR ?? window.PaddleOCR?.PaddleOCR ?? null;
+}
+
 export async function loadPpocr(onProgress?: (p: EngineProgress) => void): Promise<boolean> {
-  if (instance) return true;
+  if (onProgress) progressListeners.add(onProgress);
+  if (instance) {
+    onProgress?.({ label: "PP-OCRv6 ready", pct: 100 });
+    return true;
+  }
   if (loading) return loading;
+  lastError = null;
   loading = (async () => {
     try {
-      onProgress?.({ label: "Loading PP-OCRv6 (~30 MB, first time)…", pct: 4 });
-      const detUrl = await resolveTar("det", LOCAL_DET, onProgress);
-      const recUrl = await resolveTar("rec", LOCAL_REC, onProgress);
-      const mod = (await import(/* @vite-ignore */ SDK)) as {
-        PaddleOCR?: PaddleCtor;
-        default?: { PaddleOCR?: PaddleCtor };
-      };
-      const PaddleOCR = mod.PaddleOCR ?? mod.default?.PaddleOCR;
-      if (!PaddleOCR) throw new Error("PaddleOCR SDK missing");
-      onProgress?.({ label: "Starting PP-OCRv6…", pct: 82 });
-      instance = await PaddleOCR.create({
-        textDetectionModelName: HF.det.name,
-        textDetectionModelAsset: { url: detUrl },
-        textRecognitionModelName: HF.rec.name,
-        textRecognitionModelAsset: { url: recUrl },
-        ortOptions: { backend: "wasm", wasmPaths: ORT_WASM },
-      });
-      onProgress?.({ label: "PP-OCRv6 ready", pct: 100 });
+      emitProgress({ label: "Loading PP-OCR engine…", pct: 6 });
+      await loadScript(ENGINE_JS);
+      const PaddleOCR = paddleCtor();
+      if (!PaddleOCR) throw new Error("PP-OCR engine missing after load");
+
+      emitProgress({ label: "Resolving PP-OCRv6 models…", pct: 16 });
+      const detUrl = await resolveTar("det", emitProgress);
+      const recUrl = await resolveTar("rec", emitProgress);
+
+      emitProgress({ label: "Starting PP-OCRv6 (compiling WASM)…", pct: 82 });
+      const started = Date.now();
+      const beat = window.setInterval(() => {
+        const s = Math.round((Date.now() - started) / 1000);
+        emitProgress({
+          label: `Starting PP-OCRv6 (compiling WASM, ${s}s)…`,
+          pct: Math.min(96, 82 + Math.min(s, 14)),
+        });
+      }, 1000);
+      try {
+        if (window.ort?.env?.wasm) {
+          window.ort.env.wasm.numThreads = 1;
+          window.ort.env.wasm.proxy = false;
+        }
+        console.info("[ppocr] create", {
+          isolated: self.crossOriginIsolated,
+          sab: typeof SharedArrayBuffer !== "undefined",
+        });
+        const created = PaddleOCR.create({
+          worker: false,
+          textDetectionModelName: HF.det.name,
+          textDetectionModelAsset: { url: detUrl },
+          textRecognitionModelName: HF.rec.name,
+          textRecognitionModelAsset: { url: recUrl },
+          ortOptions: {
+            backend: "wasm",
+            wasmPaths: ORT_WASM,
+            numThreads: 1,
+            simd: true,
+            proxy: false,
+            disableWasmProxy: true,
+          },
+        });
+        const timed = new Promise<never>((_, reject) => {
+          window.setTimeout(
+            () => reject(new Error("PP-OCR start timed out. Try again, or use shape detect.")),
+            180000,
+          );
+        });
+        instance = await Promise.race([created, timed]);
+      } finally {
+        window.clearInterval(beat);
+      }
+      emitProgress({ label: "PP-OCRv6 ready", pct: 100 });
       return true;
-    } catch {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "PP-OCRv6 failed to load";
+      lastError = message;
+      console.error("[ppocr]", err);
+      emitProgress({ label: message, pct: 0, error: true });
       instance = null;
       loading = null;
       return false;

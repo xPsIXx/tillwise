@@ -10,6 +10,9 @@ tillwise.zip
 *.log
 .DS_Store
 public/models/*.tar
+public/ppocr/*.js
+public/ort/*.wasm
+.vendor-ppocr/
 .ssh-tillwise/
 .grok/*
 !.grok/app-env.json

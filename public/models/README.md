@@ -1,13 +1,14 @@
 PP-OCRv6 models
 ===============
 
-Not committed. When you enable PP-OCR in Settings, Tillwise downloads:
+Not committed. When you enable PP-OCR in Settings, Tillwise downloads these
+through the app (same-origin `/api/ppocr/hf`) from Hugging Face:
 
   https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx
   https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx
 
 (inference.onnx + inference.yml), packs them as uncompressed ustar tars, and
-caches them in the browser.
+caches them in the browser. The phone never talks to huggingface.co directly.
 
 To skip the download (offline / air-gapped), drop these files here:
 

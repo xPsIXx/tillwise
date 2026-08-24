@@ -46,6 +46,6 @@ Defaults: detect = shape (no download), read = local, collate = local.
 ### On-device models
 
 - **TensorFlow.js** — CDN: tfjs 4.20.0 + MobileNet v1 0.25 224. First load ~5–10 MB.
-- **PP-OCRv6** — first time you enable it in Settings, the app downloads det + rec from Hugging Face (`PaddlePaddle/PP-OCRv6_small_*_onnx`), packs `inference.onnx` + `inference.yml` into ustar tars, and caches them on the phone (~30 MB). Optional: drop pre-packed tars in `public/models/` to skip the download.
+- **PP-OCRv6** — first time you enable it in Settings, the app downloads det + rec from Hugging Face (`PaddlePaddle/PP-OCRv6_small_*_onnx`) through a same-origin proxy, packs `inference.onnx` + `inference.yml` into ustar tars, and caches them on the phone (~30 MB). The engine JS + ORT wasm are vendored same-origin (`npm run build:ppocr`, also on `npm install`). Optional: drop pre-packed tars in `public/models/` to skip the Hugging Face step.
 
 See `HOSTING.txt` for the short self-host cheat sheet.

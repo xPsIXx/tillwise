@@ -28,7 +28,7 @@ declare global {
 let model: TfModel | null = null;
 let loading: Promise<boolean> | null = null;
 
-export type EngineProgress = { label: string; pct: number };
+export type EngineProgress = { label: string; pct: number; error?: boolean };
 
 function loadScript(src: string): Promise<void> {
   return new Promise((resolve, reject) => {
