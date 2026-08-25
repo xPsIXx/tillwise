@@ -111,7 +111,7 @@ export function CameraView({
   const runningRef = useRef(0);
   const settingsRef = useRef<ScanSettings>(loadScanSettings());
   const lastCropRef = useRef<CropBox | null>(null);
-  const [camera, setCamera] = useState<"live" | "off" | "denied">("off");
+  const [camera, setCamera] = useState<"starting" | "live" | "off" | "denied" | "error">("starting");
   const [torch, setTorch] = useState(false);
   const [hint, setHint] = useState("Frame a label");
   const [locked, setLocked] = useState(false);
@@ -121,41 +121,99 @@ export function CameraView({
   const [saving, setSaving] = useState(false);
   const [engine, setEngine] = useState<EngineProgress | null>(null);
 
-  const stop = useCallback(() => {
+  const startGen = useRef(0);
+
+  const stopTracks = () => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
-    setCamera("off");
-    setTorch(false);
-  }, []);
+    const video = videoRef.current;
+    if (video) video.srcObject = null;
+  };
+
+  const attachStream = async (stream: MediaStream) => {
+    const video = videoRef.current;
+    if (!video) return false;
+    video.muted = true;
+    video.defaultMuted = true;
+    video.playsInline = true;
+    video.setAttribute("playsinline", "true");
+    video.setAttribute("webkit-playsinline", "true");
+    video.srcObject = stream;
+    try {
+      await video.play();
+    } catch (err) {
+      // Strict-mode remount and overlapping start() abort play(); the stream is still live.
+      if (err instanceof DOMException && err.name === "AbortError") return true;
+      throw err;
+    }
+    return true;
+  };
 
   const start = useCallback(async () => {
-    stop();
+    const gen = ++startGen.current;
+    stopTracks();
+    setCamera("starting");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          facingMode: { ideal: "environment" },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-        },
-      });
-      streamRef.current = stream;
-      const video = videoRef.current;
-      if (video) {
-        video.srcObject = stream;
-        await video.play();
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new DOMException("Camera API missing", "NotSupportedError");
       }
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
+        });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
+      }
+      if (gen !== startGen.current) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      streamRef.current = stream;
+      if (!(await attachStream(stream))) {
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => resolve());
+        });
+        if (gen !== startGen.current) return;
+        await attachStream(stream);
+      }
+      if (gen !== startGen.current) return;
       setCamera("live");
       gateRef.current.reset();
-    } catch {
-      setCamera("denied");
+    } catch (err) {
+      if (gen !== startGen.current) return;
+      console.error("[camera]", err);
+      const name = err instanceof DOMException ? err.name : "";
+      if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+        setCamera("denied");
+      } else {
+        setCamera("error");
+      }
     }
-  }, [stop]);
+  }, []);
 
   useEffect(() => {
     void start();
-    return () => stop();
-  }, [start, stop]);
+    return () => {
+      startGen.current += 1;
+      stopTracks();
+    };
+  }, [start]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    const stream = streamRef.current;
+    if (!video || !stream || camera !== "live") return;
+    if (video.srcObject !== stream) {
+      video.srcObject = stream;
+      void video.play().catch(() => undefined);
+    }
+  }, [camera]);
 
   useEffect(() => {
     let cancelled = false;
@@ -574,19 +632,44 @@ export function CameraView({
           playsInline
           muted
           autoPlay
+          disablePictureInPicture
+          onLoadedMetadata={(e) => {
+            void e.currentTarget.play().catch(() => undefined);
+          }}
         />
         {camera !== "live" && (
-          <div className="absolute inset-0 grid place-items-center bg-bg px-6 text-center">
+          <div
+            className={cn(
+              "absolute inset-0 grid place-items-center px-6 text-center",
+              camera === "starting" ? "bg-bg/55" : "bg-bg",
+            )}
+          >
             <div>
-              <CameraOff className="mx-auto size-8 text-muted" />
-              <p className="mt-3 font-display text-2xl">Camera needs a phone</p>
-              <p className="mt-2 text-sm text-muted">
-                Open Tillwise on your phone to auto-capture labels, or drop a photo / try a sample below.
+              {camera === "starting" ? (
+                <LoaderCircle className="mx-auto size-8 animate-spin text-muted" />
+              ) : (
+                <CameraOff className="mx-auto size-8 text-muted" />
+              )}
+              <p className="mt-3 font-display text-2xl">
+                {camera === "starting"
+                  ? "Starting camera…"
+                  : camera === "denied"
+                    ? "Camera is blocked"
+                    : "Couldn't start the camera"}
               </p>
-              <Button type="button" variant="secondary" className="mt-5" onClick={() => void start()}>
-                <SwitchCamera className="size-4" />
-                Enable camera
-              </Button>
+              <p className="mt-2 text-sm text-muted">
+                {camera === "starting"
+                  ? "Allow access when the phone asks, then keep this tab in the foreground."
+                  : camera === "denied"
+                    ? "Allow camera for this site in the browser address bar, then tap Enable."
+                    : "Try Enable again. If this is a preview iframe, open Tillwise in its own tab."}
+              </p>
+              {camera !== "starting" && (
+                <Button type="button" variant="secondary" className="mt-5" onClick={() => void start()}>
+                  <SwitchCamera className="size-4" />
+                  Enable camera
+                </Button>
+              )}
             </div>
           </div>
         )}
