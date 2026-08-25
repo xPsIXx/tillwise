@@ -176,15 +176,13 @@ function ppocrProxyPlugin(): Plugin {
   };
 }
 
-/** Enable SharedArrayBuffer so ORT/OpenCV wasm can start. */
+/** CORP so wasm/models can load from the preview iframe. No COEP — it blocks getUserMedia. */
 function isolationHeadersPlugin(): Plugin {
   return {
     name: "tillwise:isolation-headers",
     apply: "serve",
     configureServer(server) {
       server.middlewares.use((_req, res, next) => {
-        res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
-        res.setHeader("Cross-Origin-Embedder-Policy", "credentialless");
         res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
         next();
       });
@@ -198,8 +196,6 @@ export default defineConfig(({ command, isPreview }) => ({
     port: 8080,
     strictPort: true,
     headers: {
-      "Cross-Origin-Opener-Policy": "same-origin",
-      "Cross-Origin-Embedder-Policy": "credentialless",
       "Cross-Origin-Resource-Policy": "cross-origin",
     },
   },
@@ -208,8 +204,6 @@ export default defineConfig(({ command, isPreview }) => ({
     port: 8081,
     strictPort: true,
     headers: {
-      "Cross-Origin-Opener-Policy": "same-origin",
-      "Cross-Origin-Embedder-Policy": "credentialless",
       "Cross-Origin-Resource-Policy": "cross-origin",
     },
   },

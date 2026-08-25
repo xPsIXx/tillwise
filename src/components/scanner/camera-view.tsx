@@ -90,6 +90,94 @@ function emptyReceipt(): ReceiptExtraction {
   };
 }
 
+type CameraStatus = "starting" | "live" | "denied" | "error";
+
+let sharedStream: MediaStream | null = null;
+let sharedAcquire: Promise<MediaStream> | null = null;
+let cameraHolders = 0;
+let cameraReleaseTimer: ReturnType<typeof setTimeout> | null = null;
+let gumAbort: AbortController | null = null;
+
+function streamIsLive(stream: MediaStream | null): stream is MediaStream {
+  return Boolean(stream?.getVideoTracks().some((t) => t.readyState === "live"));
+}
+
+function bindVideo(stream: MediaStream, video: HTMLVideoElement | null) {
+  if (!video) return false;
+  video.muted = true;
+  video.defaultMuted = true;
+  video.autoplay = true;
+  video.playsInline = true;
+  video.setAttribute("playsinline", "true");
+  video.setAttribute("webkit-playsinline", "true");
+  if (video.srcObject !== stream) video.srcObject = stream;
+  void video.play().catch(() => undefined);
+  return true;
+}
+
+async function openCamera(): Promise<MediaStream> {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new DOMException("Camera API missing", "NotSupportedError");
+  }
+  gumAbort?.abort();
+  const ac = new AbortController();
+  gumAbort = ac;
+  const attempts: MediaStreamConstraints[] = [
+    { audio: false, video: { facingMode: { ideal: "environment" } } },
+    { audio: false, video: true },
+  ];
+  let last: unknown;
+  for (const constraints of attempts) {
+    if (ac.signal.aborted) break;
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        ...constraints,
+        signal: ac.signal,
+      } as MediaStreamConstraints);
+    } catch (err) {
+      last = err;
+    }
+  }
+  throw last instanceof Error ? last : new Error("Camera failed");
+}
+
+function acquireCamera(fresh = false): Promise<MediaStream> {
+  if (!fresh && streamIsLive(sharedStream)) return Promise.resolve(sharedStream);
+  if (!fresh && sharedAcquire) return sharedAcquire;
+  if (fresh) {
+    gumAbort?.abort();
+    sharedAcquire = null;
+  }
+  const raw = openCamera().then((stream) => {
+    sharedStream = stream;
+    return stream;
+  });
+  sharedAcquire = raw.finally(() => {
+    sharedAcquire = null;
+  });
+  return sharedAcquire;
+}
+
+function holdCamera() {
+  cameraHolders += 1;
+  if (cameraReleaseTimer) {
+    clearTimeout(cameraReleaseTimer);
+    cameraReleaseTimer = null;
+  }
+}
+
+function releaseCameraSoon() {
+  cameraHolders = Math.max(0, cameraHolders - 1);
+  if (cameraHolders > 0) return;
+  if (cameraReleaseTimer) clearTimeout(cameraReleaseTimer);
+  cameraReleaseTimer = setTimeout(() => {
+    if (cameraHolders > 0) return;
+    sharedStream?.getTracks().forEach((t) => t.stop());
+    sharedStream = null;
+    cameraReleaseTimer = null;
+  }, 800);
+}
+
 export function CameraView({
   tripId,
   mode,
@@ -111,7 +199,7 @@ export function CameraView({
   const runningRef = useRef(0);
   const settingsRef = useRef<ScanSettings>(loadScanSettings());
   const lastCropRef = useRef<CropBox | null>(null);
-  const [camera, setCamera] = useState<"starting" | "live" | "off" | "denied" | "error">("starting");
+  const [camera, setCamera] = useState<CameraStatus>("starting");
   const [torch, setTorch] = useState(false);
   const [hint, setHint] = useState("Frame a label");
   const [locked, setLocked] = useState(false);
@@ -121,72 +209,22 @@ export function CameraView({
   const [saving, setSaving] = useState(false);
   const [engine, setEngine] = useState<EngineProgress | null>(null);
 
-  const startGen = useRef(0);
-
-  const stopTracks = () => {
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-    const video = videoRef.current;
-    if (video) video.srcObject = null;
-  };
-
-  const attachStream = async (stream: MediaStream) => {
-    const video = videoRef.current;
-    if (!video) return false;
-    video.muted = true;
-    video.defaultMuted = true;
-    video.playsInline = true;
-    video.setAttribute("playsinline", "true");
-    video.setAttribute("webkit-playsinline", "true");
-    video.srcObject = stream;
+  const start = useCallback(async (fresh = false) => {
+    setCamera((c) => (c === "live" && !fresh ? c : "starting"));
+    const uiTimer = window.setTimeout(() => {
+      setCamera((c) => (c === "starting" ? "error" : c));
+    }, 8000);
     try {
-      await video.play();
-    } catch (err) {
-      // Strict-mode remount and overlapping start() abort play(); the stream is still live.
-      if (err instanceof DOMException && err.name === "AbortError") return true;
-      throw err;
-    }
-    return true;
-  };
-
-  const start = useCallback(async () => {
-    const gen = ++startGen.current;
-    stopTracks();
-    setCamera("starting");
-    try {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        throw new DOMException("Camera API missing", "NotSupportedError");
-      }
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: {
-            facingMode: { ideal: "environment" },
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-          },
-        });
-      } catch {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
-      }
-      if (gen !== startGen.current) {
-        stream.getTracks().forEach((t) => t.stop());
-        return;
-      }
+      const stream = await acquireCamera(fresh);
       streamRef.current = stream;
-      if (!(await attachStream(stream))) {
-        await new Promise<void>((resolve) => {
-          requestAnimationFrame(() => resolve());
-        });
-        if (gen !== startGen.current) return;
-        await attachStream(stream);
+      if (!bindVideo(stream, videoRef.current)) {
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+        bindVideo(stream, videoRef.current);
       }
-      if (gen !== startGen.current) return;
       setCamera("live");
       gateRef.current.reset();
     } catch (err) {
-      if (gen !== startGen.current) return;
+      if (err instanceof DOMException && err.name === "AbortError") return;
       console.error("[camera]", err);
       const name = err instanceof DOMException ? err.name : "";
       if (name === "NotAllowedError" || name === "PermissionDeniedError") {
@@ -194,28 +232,27 @@ export function CameraView({
       } else {
         setCamera("error");
       }
+    } finally {
+      window.clearTimeout(uiTimer);
     }
   }, []);
 
   useEffect(() => {
-    void start();
+    holdCamera();
+    void start(false);
     return () => {
-      startGen.current += 1;
-      stopTracks();
+      releaseCameraSoon();
     };
   }, [start]);
 
   useEffect(() => {
-    const video = videoRef.current;
-    const stream = streamRef.current;
-    if (!video || !stream || camera !== "live") return;
-    if (video.srcObject !== stream) {
-      video.srcObject = stream;
-      void video.play().catch(() => undefined);
-    }
+    if (camera !== "live") return;
+    const stream = streamRef.current ?? sharedStream;
+    if (stream) bindVideo(stream, videoRef.current);
   }, [camera]);
 
   useEffect(() => {
+    if (camera !== "live") return;
     let cancelled = false;
     const cfg = loadScanSettings();
     settingsRef.current = cfg;
@@ -257,11 +294,14 @@ export function CameraView({
         }
       }
     }
-    void boot();
+    const t = window.setTimeout(() => {
+      void boot();
+    }, 80);
     return () => {
       cancelled = true;
+      window.clearTimeout(t);
     };
-  }, []);
+  }, [camera]);
 
   const publishJobs = () => setJobs([...jobsRef.current]);
 
@@ -636,6 +676,9 @@ export function CameraView({
           onLoadedMetadata={(e) => {
             void e.currentTarget.play().catch(() => undefined);
           }}
+          onPlaying={() => {
+            if (streamIsLive(streamRef.current ?? sharedStream)) setCamera("live");
+          }}
         />
         {camera !== "live" && (
           <div
@@ -655,21 +698,24 @@ export function CameraView({
                   ? "Starting camera…"
                   : camera === "denied"
                     ? "Camera is blocked"
-                    : "Couldn't start the camera"}
+                    : "Tap to start the camera"}
               </p>
               <p className="mt-2 text-sm text-muted">
                 {camera === "starting"
-                  ? "Allow access when the phone asks, then keep this tab in the foreground."
+                  ? "Allow access when the phone asks. The live view should appear before PP-OCR finishes loading."
                   : camera === "denied"
                     ? "Allow camera for this site in the browser address bar, then tap Enable."
-                    : "Try Enable again. If this is a preview iframe, open Tillwise in its own tab."}
+                    : "The live view starts from a tap so the phone will actually show the feed."}
               </p>
-              {camera !== "starting" && (
-                <Button type="button" variant="secondary" className="mt-5" onClick={() => void start()}>
-                  <SwitchCamera className="size-4" />
-                  Enable camera
-                </Button>
-              )}
+              <Button
+                type="button"
+                variant="secondary"
+                className="mt-5"
+                onClick={() => void start(true)}
+              >
+                <SwitchCamera className="size-4" />
+                Enable camera
+              </Button>
             </div>
           </div>
         )}

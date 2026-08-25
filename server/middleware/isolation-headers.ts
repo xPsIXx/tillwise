@@ -1,6 +1,7 @@
 /**
- * Cross-origin isolation so ORT/OpenCV pthread wasm can use SharedArrayBuffer
- * when the app is opened as a top-level tab.
+ * CORP so wasm / models can load inside the Grok preview iframe.
+ * COOP/COEP are intentionally omitted: credentialless isolation blocks
+ * getUserMedia on phones, and PP-OCR runs single-threaded without SAB.
  */
 interface IsolationEvent {
   url: URL;
@@ -13,8 +14,8 @@ export default async function isolationHeadersMiddleware(
   const result = await next();
   if (result instanceof Response) {
     const headers = new Headers(result.headers);
-    headers.set("Cross-Origin-Opener-Policy", "same-origin");
-    headers.set("Cross-Origin-Embedder-Policy", "credentialless");
+    headers.delete("Cross-Origin-Opener-Policy");
+    headers.delete("Cross-Origin-Embedder-Policy");
     headers.set("Cross-Origin-Resource-Policy", "cross-origin");
     return new Response(result.body, {
       status: result.status,

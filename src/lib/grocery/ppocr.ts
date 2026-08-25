@@ -297,6 +297,9 @@ export async function loadPpocr(onProgress?: (p: EngineProgress) => void): Promi
       const recUrl = await resolveTar("rec", emitProgress);
 
       emitProgress({ label: "Starting PP-OCRv6 (compiling WASM)…", pct: 82 });
+      await new Promise<void>((resolve) => {
+        window.setTimeout(resolve, 60);
+      });
       const started = Date.now();
       const beat = window.setInterval(() => {
         const s = Math.round((Date.now() - started) / 1000);
