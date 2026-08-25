@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ItemCard } from "@/components/trip/item-card";
+import { ShotGallery } from "@/components/trip/shot-gallery";
+import { ShotSheet } from "@/components/trip/shot-sheet";
 import {
   collateTrip,
   completeTrip,
@@ -18,7 +20,7 @@ import {
 } from "@/lib/grocery/server";
 import { money, statusLabel, tripDate } from "@/lib/grocery/format";
 import { loadScanSettings } from "@/lib/grocery/settings";
-import type { TripItem } from "@/lib/grocery/types";
+import type { ScanShot, TripItem } from "@/lib/grocery/types";
 
 export const Route = createFileRoute("/trip/$tripId")({ component: TripPage });
 
@@ -29,6 +31,7 @@ function TripPage() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<TripItem | null>(null);
   const [store, setStore] = useState<string | null>(null);
+  const [openShot, setOpenShot] = useState<ScanShot | null>(null);
 
   const detailQuery = useQuery({
     queryKey: ["trip", tripId],
@@ -128,7 +131,8 @@ function TripPage() {
     );
   }
 
-  const { trip, items, receipts } = detailQuery.data;
+  const { trip, items, receipts, shots } = detailQuery.data;
+  const photos = shots ?? [];
   const storeValue = store ?? trip.storeName ?? "";
   const sum = items.reduce((acc, it) => acc + (it.linePrice ?? 0), 0);
   const labels = items.filter((i) => i.source === "label" && i.matchStatus !== "processing");
@@ -201,6 +205,23 @@ function TripPage() {
         </Button>
       </div>
 
+      {photos.length > 0 && (
+        <section className="mt-8">
+          <div className="flex items-end justify-between gap-3">
+            <div>
+              <h2 className="font-display text-2xl">Shots</h2>
+              <p className="mt-1 text-sm text-muted">
+                Every photo from this trip. Open one to reprocess or replace it.
+              </p>
+            </div>
+            <Button asChild variant="ghost" size="sm" className="text-muted">
+              <Link to="/shots">All photos</Link>
+            </Button>
+          </div>
+          <ShotGallery shots={photos} onOpen={setOpenShot} />
+        </section>
+      )}
+
       {receipts.length > 0 && (
         <section className="mt-8">
           <h2 className="font-display text-2xl">Receipt portions</h2>
@@ -210,17 +231,26 @@ function TripPage() {
           <ul className="mt-3 flex gap-2 overflow-x-auto pb-1">
             {receipts.map((cap) => (
               <li key={cap.id} className="w-28 shrink-0">
-                {cap.thumbnailData ? (
-                  <img
-                    src={cap.thumbnailData}
-                    alt=""
-                    className="h-36 w-28 rounded-md object-cover"
-                  />
-                ) : (
-                  <div className="grid h-36 w-28 place-items-center rounded-md bg-elevated text-xs text-subtle">
-                    Portion {cap.sequence + 1}
-                  </div>
-                )}
+                <button
+                  type="button"
+                  className="block w-full text-left"
+                  onClick={() => {
+                    const shot = photos.find((s) => s.captureId === cap.id);
+                    if (shot) setOpenShot(shot);
+                  }}
+                >
+                  {cap.thumbnailData ? (
+                    <img
+                      src={cap.thumbnailData}
+                      alt=""
+                      className="h-36 w-28 rounded-md object-cover"
+                    />
+                  ) : (
+                    <div className="grid h-36 w-28 place-items-center rounded-md bg-elevated text-xs text-subtle">
+                      Portion {cap.sequence + 1}
+                    </div>
+                  )}
+                </button>
                 <p className="mt-1 truncate text-xs text-muted">
                   {cap.extracted?.items.length ?? 0} lines
                   {cap.extracted?.portionHint ? ` · ${cap.extracted.portionHint}` : ""}
@@ -260,6 +290,15 @@ function TripPage() {
                     trip.status === "complete"
                       ? undefined
                       : (it) => removeItem.mutate(it.id)
+                  }
+                  onReprocess={
+                    trip.status === "complete"
+                      ? undefined
+                      : (it) => {
+                          const shot = photos.find((s) => s.itemId === it.id);
+                          if (shot) setOpenShot(shot);
+                          else toast.error("No original photo for this line — scan it again.");
+                        }
                   }
                 />
               </li>
@@ -354,6 +393,19 @@ function TripPage() {
             </div>
           </form>
         </div>
+      )}
+      {openShot && (
+        <ShotSheet
+          shot={openShot}
+          onClose={() => setOpenShot(null)}
+          onChanged={() => {
+            invalidate();
+            void detailQuery.refetch().then((res) => {
+              const next = res.data?.shots?.find((s) => s.id === openShot.id);
+              if (next) setOpenShot(next);
+            });
+          }}
+        />
       )}
     </main>
   );

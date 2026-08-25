@@ -33,18 +33,20 @@ import { loadTfjs, scoreTfFrame, tfReady, type EngineProgress } from "@/lib/groc
 import {
   addLabelItem,
   addReceiptCapture,
+  addScanShot,
   scanLabelPhoto,
   scanReceiptPhoto,
   updateItem,
   updateReceiptCapture,
+  updateScanShot,
 } from "@/lib/grocery/server";
 import type { LabelExtraction, ReceiptExtraction, ScanMode } from "@/lib/grocery/types";
 import { money, qty, weight } from "@/lib/grocery/format";
 import { cn } from "@/lib/utils";
 
 type Pending =
-  | { kind: "label"; image: string; data: LabelExtraction; itemId?: number }
-  | { kind: "receipt"; image: string; data: ReceiptExtraction; captureId?: number };
+  | { kind: "label"; image: string; data: LabelExtraction; itemId?: number; shotId?: number }
+  | { kind: "receipt"; image: string; data: ReceiptExtraction; captureId?: number; shotId?: number };
 
 type Job = {
   id: string;
@@ -54,6 +56,7 @@ type Job = {
   status: "queued" | "reading" | "done" | "error";
   itemId?: number;
   captureId?: number;
+  shotId?: number;
   error?: string;
 };
 
@@ -435,10 +438,20 @@ export function CameraView({
               },
             },
           });
+          if (job.shotId) {
+            await updateScanShot({
+              data: {
+                shotId: job.shotId,
+                lastRead: data,
+                itemId: job.itemId,
+                barcode: data.barcode,
+              },
+            }).catch(() => undefined);
+          }
           toast.success(`Added ${data.name}`);
           onSaved();
         } else {
-          setPending({ kind: "label", image: job.image, data });
+          setPending({ kind: "label", image: job.image, data, shotId: job.shotId });
         }
       } else {
         const result = await scanReceiptPhoto({
@@ -453,10 +466,15 @@ export function CameraView({
           await updateReceiptCapture({
             data: { captureId: job.captureId, extracted: result.data },
           });
+          if (job.shotId) {
+            await updateScanShot({
+              data: { shotId: job.shotId, lastRead: result.data, captureId: job.captureId },
+            }).catch(() => undefined);
+          }
           toast.success("Receipt portion read");
           onSaved();
         } else {
-          setPending({ kind: "receipt", image: job.image, data: result.data });
+          setPending({ kind: "receipt", image: job.image, data: result.data, shotId: job.shotId });
         }
       }
       job.status = "done";
@@ -502,8 +520,8 @@ export function CameraView({
     const dataUrl = image.startsWith("data:") ? image : await publicImageToDataUrl(image);
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const job: Job = { id, mode: scanMode, image: dataUrl, barcode, status: "queued" };
+    const thumb = await makeThumbnail(dataUrl);
     if (cfg.autoAdd) {
-      const thumb = await makeThumbnail(dataUrl);
       if (scanMode === "label") {
         const item = await addLabelItem({
           data: {
@@ -521,6 +539,22 @@ export function CameraView({
         job.captureId = cap.id;
       }
       onSaved();
+    }
+    try {
+      const shot = await addScanShot({
+        data: {
+          tripId,
+          kind: scanMode,
+          imageData: dataUrl,
+          thumbnailData: thumb,
+          barcode,
+          itemId: job.itemId ?? null,
+          captureId: job.captureId ?? null,
+        },
+      });
+      job.shotId = shot.id;
+    } catch (err) {
+      console.error("[shot]", err);
     }
     jobsRef.current = [...jobsRef.current, job];
     publishJobs();
@@ -671,26 +705,48 @@ export function CameraView({
     if (kind === "label") {
       const sample = SAMPLE_LABELS.find((s) => s.id === id);
       if (!sample) return;
+      const image = await publicImageToDataUrl(sample.image);
       if (settingsRef.current.autoAdd) {
-        await addLabelItem({
+        const item = await addLabelItem({
           data: { tripId, extracted: sample.data, thumbnailData: sample.image },
         });
+        await addScanShot({
+          data: {
+            tripId,
+            kind: "label",
+            imageData: image,
+            thumbnailData: sample.image,
+            itemId: item.id,
+            lastRead: sample.data,
+          },
+        }).catch(() => undefined);
         toast.success(`Added ${sample.data.name}`);
         onSaved();
       } else {
-        setPending({ kind: "label", image: sample.image, data: sample.data });
+        setPending({ kind: "label", image, data: sample.data });
       }
     } else {
       const sample = SAMPLE_RECEIPTS.find((s) => s.id === id);
       if (!sample) return;
+      const image = await publicImageToDataUrl(sample.image);
       if (settingsRef.current.autoAdd) {
-        await addReceiptCapture({
+        const cap = await addReceiptCapture({
           data: { tripId, extracted: sample.data, thumbnailData: sample.image },
         });
+        await addScanShot({
+          data: {
+            tripId,
+            kind: "receipt",
+            imageData: image,
+            thumbnailData: sample.image,
+            captureId: cap.id,
+            lastRead: sample.data,
+          },
+        }).catch(() => undefined);
         toast.success("Receipt portion saved");
         onSaved();
       } else {
-        setPending({ kind: "receipt", image: sample.image, data: sample.data });
+        setPending({ kind: "receipt", image, data: sample.data });
       }
     }
   }
@@ -703,14 +759,46 @@ export function CameraView({
         ? await makeThumbnail(pending.image)
         : pending.image;
       if (pending.kind === "label") {
-        await addLabelItem({
+        const item = await addLabelItem({
           data: { tripId, extracted: pending.data, thumbnailData: thumb },
         });
+        if (pending.shotId) {
+          await updateScanShot({
+            data: { shotId: pending.shotId, itemId: item.id, lastRead: pending.data },
+          }).catch(() => undefined);
+        } else if (pending.image.startsWith("data:")) {
+          await addScanShot({
+            data: {
+              tripId,
+              kind: "label",
+              imageData: pending.image,
+              thumbnailData: thumb,
+              itemId: item.id,
+              lastRead: pending.data,
+            },
+          }).catch(() => undefined);
+        }
         toast.success(`Added ${pending.data.name}`);
       } else {
-        await addReceiptCapture({
+        const cap = await addReceiptCapture({
           data: { tripId, extracted: pending.data, thumbnailData: thumb },
         });
+        if (pending.shotId) {
+          await updateScanShot({
+            data: { shotId: pending.shotId, captureId: cap.id, lastRead: pending.data },
+          }).catch(() => undefined);
+        } else if (pending.image.startsWith("data:")) {
+          await addScanShot({
+            data: {
+              tripId,
+              kind: "receipt",
+              imageData: pending.image,
+              thumbnailData: thumb,
+              captureId: cap.id,
+              lastRead: pending.data,
+            },
+          }).catch(() => undefined);
+        }
         toast.success("Receipt portion saved");
       }
       setPending(null);

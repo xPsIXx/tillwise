@@ -6,6 +6,7 @@ import type {
   LlmProvider,
   ReceiptCapture,
   ReceiptExtraction,
+  ScanShot,
   Trip,
   TripDetail,
   TripItem,
@@ -63,6 +64,53 @@ type ReceiptRow = {
   thumbnail_data: string | null;
   created_at: unknown;
 };
+
+type ShotRow = {
+  id: number;
+  trip_id: number;
+  kind: string;
+  thumbnail_data: string | null;
+  barcode: string | null;
+  item_id: number | null;
+  capture_id: number | null;
+  last_read_json: string | null;
+  created_at: unknown;
+  store_name?: string | null;
+};
+
+function mapShot(row: ShotRow): ScanShot {
+  let lastRead: ScanShot["lastRead"] = null;
+  if (row.last_read_json) {
+    try {
+      lastRead = JSON.parse(row.last_read_json) as NonNullable<ScanShot["lastRead"]>;
+    } catch {
+      lastRead = null;
+    }
+  }
+  return {
+    id: Number(row.id),
+    tripId: Number(row.trip_id),
+    kind: row.kind === "receipt" ? "receipt" : "label",
+    thumbnailData: row.thumbnail_data,
+    barcode: row.barcode,
+    itemId: row.item_id != null ? Number(row.item_id) : null,
+    captureId: row.capture_id != null ? Number(row.capture_id) : null,
+    lastRead,
+    createdAt: iso(row.created_at),
+    storeName: row.store_name,
+  };
+}
+
+async function loadShots(tripId: number): Promise<ScanShot[]> {
+  const sql = await getSql();
+  const rows = await sql<ShotRow>`
+    select id, trip_id, kind, thumbnail_data, barcode, item_id, capture_id, last_read_json, created_at
+      from scan_shots
+     where trip_id = ${tripId}
+     order by created_at desc, id desc
+  `;
+  return rows.map(mapShot);
+}
 
 function n(v: unknown): number | null {
   if (v == null || v === "") return null;
@@ -210,8 +258,12 @@ export const getTrip = createServerFn({ method: "POST" })
   .handler(async ({ data: tripId }): Promise<TripDetail> => {
     const trip = await loadTrip(tripId);
     if (!trip) throw new Error("Trip not found");
-    const [items, receipts] = await Promise.all([loadItems(tripId), loadReceipts(tripId)]);
-    return { trip, items, receipts };
+    const [items, receipts, shots] = await Promise.all([
+      loadItems(tripId),
+      loadReceipts(tripId),
+      loadShots(tripId),
+    ]);
+    return { trip, items, receipts, shots };
   });
 
 export const createTrip = createServerFn({ method: "POST" })
@@ -569,6 +621,7 @@ export const collateTrip = createServerFn({ method: "POST" })
       trip: next,
       items: await loadItems(tripId),
       receipts: await loadReceipts(tripId),
+      shots: await loadShots(tripId),
     };
   });
 
@@ -590,6 +643,138 @@ async function insertMerged(
     )
   `;
 }
+
+export const addScanShot = createServerFn({ method: "POST" })
+  .validator(
+    (input: {
+      tripId: number;
+      kind: "label" | "receipt";
+      imageData: string;
+      thumbnailData?: string | null;
+      barcode?: string | null;
+      itemId?: number | null;
+      captureId?: number | null;
+      lastRead?: LabelExtraction | ReceiptExtraction | null;
+    }) => {
+      if (!input.imageData || input.imageData.length > 2_400_000) {
+        throw new Error("Photo is too large");
+      }
+      return input;
+    },
+  )
+  .handler(async ({ data }): Promise<ScanShot> => {
+    const trip = await loadTrip(data.tripId);
+    if (!trip) throw new Error("Trip not found");
+    const sql = await getSql();
+    const json = data.lastRead ? JSON.stringify(data.lastRead) : null;
+    const rows = await sql<ShotRow>`
+      insert into scan_shots (
+        user_id, trip_id, kind, image_data, thumbnail_data, barcode, item_id, capture_id, last_read_json
+      ) values (
+        ${OWNER}, ${data.tripId}, ${data.kind}, ${data.imageData}, ${data.thumbnailData ?? null},
+        ${data.barcode ?? null}, ${data.itemId ?? null}, ${data.captureId ?? null}, ${json}
+      )
+      returning id, trip_id, kind, thumbnail_data, barcode, item_id, capture_id, last_read_json, created_at
+    `;
+    if (!rows[0]) throw new Error("Could not save photo");
+    return mapShot(rows[0]);
+  });
+
+export const updateScanShot = createServerFn({ method: "POST" })
+  .validator(
+    (input: {
+      shotId: number;
+      imageData?: string | null;
+      thumbnailData?: string | null;
+      barcode?: string | null;
+      itemId?: number | null;
+      captureId?: number | null;
+      lastRead?: LabelExtraction | ReceiptExtraction | null;
+    }) => input,
+  )
+  .handler(async ({ data }): Promise<ScanShot> => {
+    const sql = await getSql();
+    const existing = await sql<ShotRow>`
+      select id, trip_id, kind, thumbnail_data, barcode, item_id, capture_id, last_read_json, created_at
+        from scan_shots
+       where id = ${data.shotId}
+       limit 1
+    `;
+    const row = existing[0];
+    if (!row) throw new Error("Photo not found");
+    const json =
+      data.lastRead === undefined
+        ? row.last_read_json
+        : data.lastRead
+          ? JSON.stringify(data.lastRead)
+          : null;
+    const thumb = data.thumbnailData === undefined ? row.thumbnail_data : data.thumbnailData;
+    const barcode = data.barcode === undefined ? row.barcode : data.barcode;
+    const itemId = data.itemId === undefined ? row.item_id : data.itemId;
+    const captureId = data.captureId === undefined ? row.capture_id : data.captureId;
+    const rows = data.imageData
+      ? await sql<ShotRow>`
+          update scan_shots
+             set image_data = ${data.imageData},
+                 thumbnail_data = ${thumb},
+                 barcode = ${barcode},
+                 item_id = ${itemId},
+                 capture_id = ${captureId},
+                 last_read_json = ${json}
+           where id = ${data.shotId}
+           returning id, trip_id, kind, thumbnail_data, barcode, item_id, capture_id, last_read_json, created_at
+        `
+      : await sql<ShotRow>`
+          update scan_shots
+             set thumbnail_data = ${thumb},
+                 barcode = ${barcode},
+                 item_id = ${itemId},
+                 capture_id = ${captureId},
+                 last_read_json = ${json}
+           where id = ${data.shotId}
+           returning id, trip_id, kind, thumbnail_data, barcode, item_id, capture_id, last_read_json, created_at
+        `;
+    if (!rows[0]) throw new Error("Photo not found");
+    return mapShot(rows[0]);
+  });
+
+export const getShotImage = createServerFn({ method: "POST" })
+  .validator((shotId: number) => shotId)
+  .handler(async ({ data: shotId }): Promise<{ image: string; shot: ScanShot }> => {
+    const sql = await getSql();
+    const rows = await sql<ShotRow & { image_data: string }>`
+      select id, trip_id, kind, thumbnail_data, barcode, item_id, capture_id, last_read_json, created_at, image_data
+        from scan_shots
+       where id = ${shotId}
+       limit 1
+    `;
+    const row = rows[0];
+    if (!row) throw new Error("Photo not found");
+    return { image: row.image_data, shot: mapShot(row) };
+  });
+
+export const deleteScanShot = createServerFn({ method: "POST" })
+  .validator((shotId: number) => shotId)
+  .handler(async ({ data: shotId }): Promise<{ ok: true }> => {
+    const sql = await getSql();
+    await sql`delete from scan_shots where id = ${shotId}`;
+    return { ok: true };
+  });
+
+export const listRecentShots = createServerFn({ method: "GET" }).handler(
+  async (): Promise<ScanShot[]> => {
+    const sql = await getSql();
+    const rows = await sql<ShotRow>`
+      select s.id, s.trip_id, s.kind, s.thumbnail_data, s.barcode, s.item_id, s.capture_id,
+             s.last_read_json, s.created_at, t.store_name
+        from scan_shots s
+        join trips t on t.id = s.trip_id
+       order by s.created_at desc, s.id desc
+       limit 80
+    `;
+    return rows.map(mapShot);
+  },
+);
 
 export const completeTrip = createServerFn({ method: "POST" })
   .validator((tripId: number) => tripId)

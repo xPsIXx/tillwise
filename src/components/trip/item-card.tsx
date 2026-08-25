@@ -1,4 +1,4 @@
-import { LoaderCircle, Pencil, Trash2 } from "lucide-react";
+import { LoaderCircle, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import type { TripItem } from "@/lib/grocery/types";
 import { money, qty, weight } from "@/lib/grocery/format";
 import { Badge } from "@/components/ui/badge";
@@ -18,11 +18,13 @@ export function ItemCard({
   currency,
   onEdit,
   onDelete,
+  onReprocess,
 }: {
   item: TripItem;
   currency: string;
   onEdit?: (item: TripItem) => void;
   onDelete?: (item: TripItem) => void;
+  onReprocess?: (item: TripItem) => void;
 }) {
   const match = MATCH[item.matchStatus] ?? MATCH.unmatched;
   const reading = item.matchStatus === "processing";
@@ -69,8 +71,20 @@ export function ItemCard({
             strong
           />
         </dl>
-        {(onEdit || onDelete) && !reading && (
+        {(onEdit || onDelete || onReprocess) && !reading && (
           <div className="mt-2 flex justify-end gap-1">
+            {onReprocess && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-9 px-2 text-muted"
+                onClick={() => onReprocess(item)}
+              >
+                <RefreshCw className="size-3.5" />
+                Reprocess
+              </Button>
+            )}
             {onEdit && (
               <Button
                 type="button"

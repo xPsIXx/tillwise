@@ -62,6 +62,19 @@ export type ReceiptCapture = {
   createdAt: string;
 };
 
+export type ScanShot = {
+  id: number;
+  tripId: number;
+  kind: ScanMode;
+  thumbnailData: string | null;
+  barcode: string | null;
+  itemId: number | null;
+  captureId: number | null;
+  lastRead: LabelExtraction | ReceiptExtraction | null;
+  createdAt: string;
+  storeName?: string | null;
+};
+
 export type LabelExtraction = {
   name: string;
   brand: string | null;
@@ -136,4 +149,5 @@ export type TripDetail = {
   trip: Trip;
   items: TripItem[];
   receipts: ReceiptCapture[];
+  shots: ScanShot[];
 };
