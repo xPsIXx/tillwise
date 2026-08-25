@@ -10,6 +10,7 @@ import { Toaster } from "sonner";
 import { createServerFn } from "@tanstack/react-start";
 import { AuthProvider } from "@/lib/auth/provider";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
+import { EngineHost } from "@/components/engine-host";
 import { AppShell } from "@/components/shell";
 import appCss from "../styles.css?url";
 
@@ -67,6 +68,7 @@ function RootDocument() {
       </head>
       <body>
         <PreviewHostBridge />
+        <EngineHost />
         <AuthProvider>
           <QueryClientProvider client={queryClient}>
             <AppShell>

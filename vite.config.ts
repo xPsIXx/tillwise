@@ -184,6 +184,7 @@ function isolationHeadersPlugin(): Plugin {
     configureServer(server) {
       server.middlewares.use((_req, res, next) => {
         res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+        res.setHeader("Permissions-Policy", "camera=(self), microphone=()");
         next();
       });
     },
@@ -197,6 +198,7 @@ export default defineConfig(({ command, isPreview }) => ({
     strictPort: true,
     headers: {
       "Cross-Origin-Resource-Policy": "cross-origin",
+      "Permissions-Policy": "camera=(self), microphone=()",
     },
   },
   preview: {
@@ -205,6 +207,7 @@ export default defineConfig(({ command, isPreview }) => ({
     strictPort: true,
     headers: {
       "Cross-Origin-Resource-Policy": "cross-origin",
+      "Permissions-Policy": "camera=(self), microphone=()",
     },
   },
   resolve: { tsconfigPaths: true },

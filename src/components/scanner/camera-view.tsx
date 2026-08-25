@@ -96,7 +96,6 @@ let sharedStream: MediaStream | null = null;
 let sharedAcquire: Promise<MediaStream> | null = null;
 let cameraHolders = 0;
 let cameraReleaseTimer: ReturnType<typeof setTimeout> | null = null;
-let gumAbort: AbortController | null = null;
 
 function streamIsLive(stream: MediaStream | null): stream is MediaStream {
   return Boolean(stream?.getVideoTracks().some((t) => t.readyState === "live"));
@@ -104,36 +103,72 @@ function streamIsLive(stream: MediaStream | null): stream is MediaStream {
 
 function bindVideo(stream: MediaStream, video: HTMLVideoElement | null) {
   if (!video) return false;
-  video.muted = true;
-  video.defaultMuted = true;
-  video.autoplay = true;
-  video.playsInline = true;
   video.setAttribute("playsinline", "true");
   video.setAttribute("webkit-playsinline", "true");
+  video.setAttribute("autoplay", "true");
+  video.setAttribute("muted", "true");
+  video.muted = true;
+  video.defaultMuted = true;
+  video.playsInline = true;
+  video.autoplay = true;
+  video.controls = false;
+  video.disablePictureInPicture = true;
+  const track = stream.getVideoTracks()[0];
+  if (track) track.enabled = true;
   if (video.srcObject !== stream) video.srcObject = stream;
   void video.play().catch(() => undefined);
   return true;
 }
 
-async function openCamera(): Promise<MediaStream> {
+function waitForFrame(video: HTMLVideoElement, stream: MediaStream, ms = 5000): Promise<boolean> {
+  return new Promise((resolve) => {
+    let done = false;
+    const track = stream.getVideoTracks()[0];
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      video.removeEventListener("playing", check);
+      video.removeEventListener("loadeddata", check);
+      video.removeEventListener("loadedmetadata", check);
+      track?.removeEventListener("unmute", check);
+      window.clearTimeout(timer);
+      resolve(ok);
+    };
+    const check = () => {
+      if (video.videoWidth > 2 && video.videoHeight > 2) finish(true);
+    };
+    video.addEventListener("playing", check);
+    video.addEventListener("loadeddata", check);
+    video.addEventListener("loadedmetadata", check);
+    track?.addEventListener("unmute", check);
+    if (typeof video.requestVideoFrameCallback === "function") {
+      video.requestVideoFrameCallback(() => finish(true));
+    }
+    const timer = window.setTimeout(() => finish(video.videoWidth > 2), ms);
+    void video.play().then(check).catch(() => undefined);
+    check();
+  });
+}
+
+async function openCamera(facing: "environment" | "user" | "any"): Promise<MediaStream> {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new DOMException("Camera API missing", "NotSupportedError");
   }
-  gumAbort?.abort();
-  const ac = new AbortController();
-  gumAbort = ac;
-  const attempts: MediaStreamConstraints[] = [
-    { audio: false, video: { facingMode: { ideal: "environment" } } },
-    { audio: false, video: true },
-  ];
+  const attempts: MediaStreamConstraints[] =
+    facing === "any"
+      ? [{ audio: false, video: true }]
+      : [
+          { audio: false, video: { facingMode: { ideal: facing } } },
+          { audio: false, video: true },
+        ];
   let last: unknown;
   for (const constraints of attempts) {
-    if (ac.signal.aborted) break;
     try {
-      return await navigator.mediaDevices.getUserMedia({
-        ...constraints,
-        signal: ac.signal,
-      } as MediaStreamConstraints);
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      stream.getVideoTracks().forEach((t) => {
+        t.enabled = true;
+      });
+      return stream;
     } catch (err) {
       last = err;
     }
@@ -141,20 +176,19 @@ async function openCamera(): Promise<MediaStream> {
   throw last instanceof Error ? last : new Error("Camera failed");
 }
 
-function acquireCamera(fresh = false): Promise<MediaStream> {
+function acquireCamera(fresh = false, facing: "environment" | "user" | "any" = "environment"): Promise<MediaStream> {
   if (!fresh && streamIsLive(sharedStream)) return Promise.resolve(sharedStream);
   if (!fresh && sharedAcquire) return sharedAcquire;
-  if (fresh) {
-    gumAbort?.abort();
-    sharedAcquire = null;
-  }
-  const raw = openCamera().then((stream) => {
-    sharedStream = stream;
-    return stream;
-  });
-  sharedAcquire = raw.finally(() => {
-    sharedAcquire = null;
-  });
+  const previous = sharedStream;
+  sharedAcquire = openCamera(facing)
+    .then((stream) => {
+      if (previous && previous !== stream) previous.getTracks().forEach((t) => t.stop());
+      sharedStream = stream;
+      return stream;
+    })
+    .finally(() => {
+      sharedAcquire = null;
+    });
   return sharedAcquire;
 }
 
@@ -192,6 +226,8 @@ export function CameraView({
   onSaved: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const viewCanvasRef = useRef<HTMLCanvasElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const gateRef = useRef(new StabilityGate(4, 900));
   const snapLock = useRef(false);
@@ -211,15 +247,26 @@ export function CameraView({
 
   const start = useCallback(async (fresh = false) => {
     setCamera((c) => (c === "live" && !fresh ? c : "starting"));
-    const uiTimer = window.setTimeout(() => {
-      setCamera((c) => (c === "starting" ? "error" : c));
-    }, 8000);
     try {
-      const stream = await acquireCamera(fresh);
+      const stream = await acquireCamera(fresh, "environment");
       streamRef.current = stream;
-      if (!bindVideo(stream, videoRef.current)) {
+      const video = videoRef.current;
+      bindVideo(stream, video);
+      if (!video) {
         await new Promise<void>((r) => requestAnimationFrame(() => r()));
         bindVideo(stream, videoRef.current);
+      }
+      const el = videoRef.current;
+      const got = el ? await waitForFrame(el, stream) : false;
+      if (!got) {
+        const fallback = await acquireCamera(true, "any");
+        streamRef.current = fallback;
+        bindVideo(fallback, videoRef.current);
+        const again = videoRef.current ? await waitForFrame(videoRef.current, fallback, 3500) : false;
+        if (!again) {
+          setCamera("error");
+          return;
+        }
       }
       setCamera("live");
       gateRef.current.reset();
@@ -232,8 +279,6 @@ export function CameraView({
       } else {
         setCamera("error");
       }
-    } finally {
-      window.clearTimeout(uiTimer);
     }
   }, []);
 
@@ -249,6 +294,35 @@ export function CameraView({
     if (camera !== "live") return;
     const stream = streamRef.current ?? sharedStream;
     if (stream) bindVideo(stream, videoRef.current);
+  }, [camera]);
+
+  useEffect(() => {
+    if (camera !== "live") return;
+    const video = videoRef.current;
+    const canvas = viewCanvasRef.current;
+    if (!video || !canvas) return;
+    const ctx = canvas.getContext("2d", { alpha: false });
+    if (!ctx) return;
+    let raf = 0;
+    const draw = () => {
+      raf = requestAnimationFrame(draw);
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      if (vw < 2 || vh < 2) return;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const cw = Math.max(1, Math.round(canvas.clientWidth * dpr));
+      const ch = Math.max(1, Math.round(canvas.clientHeight * dpr));
+      if (canvas.width !== cw || canvas.height !== ch) {
+        canvas.width = cw;
+        canvas.height = ch;
+      }
+      const scale = Math.max(cw / vw, ch / vh);
+      const dw = vw * scale;
+      const dh = vh * scale;
+      ctx.drawImage(video, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
+    };
+    draw();
+    return () => cancelAnimationFrame(raf);
   }, [camera]);
 
   useEffect(() => {
@@ -665,10 +739,11 @@ export function CameraView({
 
   return (
     <div className="relative -mx-4 flex min-h-[calc(100dvh-5rem)] flex-col bg-bg">
-      <div className="relative flex-1 overflow-hidden bg-bg">
+      <div className="relative min-h-[55dvh] flex-1 overflow-hidden bg-black">
         <video
           ref={videoRef}
           className="absolute inset-0 size-full object-cover"
+          style={{ transform: "translateZ(0)" }}
           playsInline
           muted
           autoPlay
@@ -677,14 +752,22 @@ export function CameraView({
             void e.currentTarget.play().catch(() => undefined);
           }}
           onPlaying={() => {
-            if (streamIsLive(streamRef.current ?? sharedStream)) setCamera("live");
+            if (videoRef.current && videoRef.current.videoWidth > 2) setCamera("live");
           }}
+          onClick={() => {
+            void videoRef.current?.play().catch(() => undefined);
+          }}
+        />
+        <canvas
+          ref={viewCanvasRef}
+          className="pointer-events-none absolute inset-0 size-full"
+          style={{ transform: "translateZ(0)" }}
         />
         {camera !== "live" && (
           <div
             className={cn(
-              "absolute inset-0 grid place-items-center px-6 text-center",
-              camera === "starting" ? "bg-bg/55" : "bg-bg",
+              "absolute inset-0 z-10 grid place-items-center px-6 text-center",
+              camera === "starting" ? "bg-bg/40" : "bg-bg",
             )}
           >
             <div>
@@ -701,26 +784,33 @@ export function CameraView({
                     : "Tap to start the camera"}
               </p>
               <p className="mt-2 text-sm text-muted">
-                {camera === "starting"
-                  ? "Allow access when the phone asks. The live view should appear before PP-OCR finishes loading."
-                  : camera === "denied"
-                    ? "Allow camera for this site in the browser address bar, then tap Enable."
-                    : "The live view starts from a tap so the phone will actually show the feed."}
+                {camera === "denied"
+                  ? "Allow camera for this site, then tap Enable."
+                  : "If the picture stays black, tap Enable, then Photo to use the phone camera app."}
               </p>
-              <Button
-                type="button"
-                variant="secondary"
-                className="mt-5"
-                onClick={() => void start(true)}
-              >
-                <SwitchCamera className="size-4" />
-                Enable camera
-              </Button>
+              <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => {
+                    const v = videoRef.current;
+                    if (v) void v.play().catch(() => undefined);
+                    void start(true);
+                  }}
+                >
+                  <SwitchCamera className="size-4" />
+                  Enable camera
+                </Button>
+                <Button type="button" variant="secondary" onClick={() => fileRef.current?.click()}>
+                  <ImagePlus className="size-4" />
+                  Photo
+                </Button>
+              </div>
             </div>
           </div>
         )}
 
-        <div className="pointer-events-none absolute inset-0">
+        <div className="pointer-events-none absolute inset-0 z-[2]">
           <div
             className={cn(
               "absolute left-[12%] right-[12%] rounded-[28px] border-2",
@@ -732,7 +822,7 @@ export function CameraView({
 
         {flash && <div className="shutter-flash pointer-events-none absolute inset-0 bg-fg" />}
 
-        <div className="absolute inset-x-0 top-0 flex items-center justify-between gap-3 p-4 pr-16 pt-[max(1rem,env(safe-area-inset-top))]">
+        <div className="absolute inset-x-0 top-0 z-20 flex items-center justify-between gap-3 p-4 pr-16 pt-[max(1rem,env(safe-area-inset-top))]">
           <Button type="button" variant="secondary" size="icon" onClick={onClose} aria-label="Close scanner">
             <X className="size-5" />
           </Button>
@@ -819,6 +909,7 @@ export function CameraView({
             <ImagePlus className="size-5" />
             <span className="sr-only">Upload photo</span>
             <input
+              ref={fileRef}
               type="file"
               accept="image/*"
               capture="environment"

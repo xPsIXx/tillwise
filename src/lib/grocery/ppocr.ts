@@ -52,8 +52,21 @@ declare global {
   }
 }
 
-let instance: PaddleInstance | null = null;
-let loading: Promise<boolean> | null = null;
+type PpocrStore = {
+  instance: PaddleInstance | null;
+  loading: Promise<boolean> | null;
+  detUrl: string | null;
+  recUrl: string | null;
+};
+
+function ppocrStore(): PpocrStore {
+  const g = globalThis as typeof globalThis & { __tillwisePpocr?: PpocrStore };
+  if (!g.__tillwisePpocr) {
+    g.__tillwisePpocr = { instance: null, loading: null, detUrl: null, recUrl: null };
+  }
+  return g.__tillwisePpocr;
+}
+
 let lastError: string | null = null;
 const progressListeners = new Set<(p: EngineProgress) => void>();
 
@@ -75,7 +88,7 @@ export type PpocrHit = {
 };
 
 export function ppocrReady(): boolean {
-  return Boolean(instance);
+  return Boolean(ppocrStore().instance);
 }
 
 export function ppocrLastError(): string | null {
@@ -241,12 +254,18 @@ async function resolveTar(
   kind: Kind,
   onProgress?: (p: EngineProgress) => void,
 ): Promise<string> {
+  const store = ppocrStore();
+  const existing = kind === "det" ? store.detUrl : store.recUrl;
+  if (existing) return existing;
   const cached = await tarFromCache(kind);
-  if (cached) return cached;
-  if (await localTarExists(HF[kind].localPath)) {
-    return fetchLocalTar(kind, onProgress);
-  }
-  return downloadAndPack(kind, onProgress);
+  const url = cached
+    ? cached
+    : (await localTarExists(HF[kind].localPath))
+      ? await fetchLocalTar(kind, onProgress)
+      : await downloadAndPack(kind, onProgress);
+  if (kind === "det") store.detUrl = url;
+  else store.recUrl = url;
+  return url;
 }
 
 function loadScript(src: string): Promise<void> {
@@ -279,82 +298,85 @@ function paddleCtor(): PaddleCtor | null {
 
 export async function loadPpocr(onProgress?: (p: EngineProgress) => void): Promise<boolean> {
   if (onProgress) progressListeners.add(onProgress);
-  if (instance) {
-    onProgress?.({ label: "PP-OCRv6 ready", pct: 100 });
-    return true;
-  }
-  if (loading) return loading;
-  lastError = null;
-  loading = (async () => {
-    try {
-      emitProgress({ label: "Loading PP-OCR engine…", pct: 6 });
-      await loadScript(ENGINE_JS);
-      const PaddleOCR = paddleCtor();
-      if (!PaddleOCR) throw new Error("PP-OCR engine missing after load");
-
-      emitProgress({ label: "Resolving PP-OCRv6 models…", pct: 16 });
-      const detUrl = await resolveTar("det", emitProgress);
-      const recUrl = await resolveTar("rec", emitProgress);
-
-      emitProgress({ label: "Starting PP-OCRv6 (compiling WASM)…", pct: 82 });
-      await new Promise<void>((resolve) => {
-        window.setTimeout(resolve, 60);
-      });
-      const started = Date.now();
-      const beat = window.setInterval(() => {
-        const s = Math.round((Date.now() - started) / 1000);
-        emitProgress({
-          label: `Starting PP-OCRv6 (compiling WASM, ${s}s)…`,
-          pct: Math.min(96, 82 + Math.min(s, 14)),
-        });
-      }, 1000);
-      try {
-        if (window.ort?.env?.wasm) {
-          window.ort.env.wasm.numThreads = 1;
-          window.ort.env.wasm.proxy = false;
-        }
-        console.info("[ppocr] create", {
-          isolated: self.crossOriginIsolated,
-          sab: typeof SharedArrayBuffer !== "undefined",
-        });
-        const created = PaddleOCR.create({
-          worker: false,
-          textDetectionModelName: HF.det.name,
-          textDetectionModelAsset: { url: detUrl },
-          textRecognitionModelName: HF.rec.name,
-          textRecognitionModelAsset: { url: recUrl },
-          ortOptions: {
-            backend: "wasm",
-            wasmPaths: ORT_WASM,
-            numThreads: 1,
-            simd: true,
-            proxy: false,
-            disableWasmProxy: true,
-          },
-        });
-        const timed = new Promise<never>((_, reject) => {
-          window.setTimeout(
-            () => reject(new Error("PP-OCR start timed out. Try again, or use shape detect.")),
-            180000,
-          );
-        });
-        instance = await Promise.race([created, timed]);
-      } finally {
-        window.clearInterval(beat);
-      }
-      emitProgress({ label: "PP-OCRv6 ready", pct: 100 });
+  const store = ppocrStore();
+  try {
+    if (store.instance) {
+      onProgress?.({ label: "PP-OCRv6 ready", pct: 100 });
       return true;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "PP-OCRv6 failed to load";
-      lastError = message;
-      console.error("[ppocr]", err);
-      emitProgress({ label: message, pct: 0, error: true });
-      instance = null;
-      loading = null;
-      return false;
     }
-  })();
-  return loading;
+    if (!store.loading) store.loading = compilePpocr();
+    return await store.loading;
+  } finally {
+    if (onProgress) progressListeners.delete(onProgress);
+  }
+}
+
+async function compilePpocr(): Promise<boolean> {
+  const store = ppocrStore();
+  try {
+    emitProgress({ label: "Loading PP-OCR engine…", pct: 6 });
+    await loadScript(ENGINE_JS);
+    const PaddleOCR = paddleCtor();
+    if (!PaddleOCR) throw new Error("PP-OCR engine missing after load");
+
+    emitProgress({ label: "Resolving PP-OCRv6 models…", pct: 16 });
+    const detUrl = await resolveTar("det", emitProgress);
+    const recUrl = await resolveTar("rec", emitProgress);
+
+    emitProgress({ label: "Compiling PP-OCRv6 (once this tab)…", pct: 82 });
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, 60);
+    });
+    const started = Date.now();
+    const beat = window.setInterval(() => {
+      const s = Math.round((Date.now() - started) / 1000);
+      emitProgress({
+        label: `Compiling PP-OCRv6 (${s}s) — stays cached in this tab`,
+        pct: Math.min(96, 82 + Math.min(s, 14)),
+      });
+    }, 1000);
+    try {
+      if (window.ort?.env?.wasm) {
+        window.ort.env.wasm.numThreads = 1;
+        window.ort.env.wasm.proxy = false;
+      }
+      console.info("[ppocr] create", {
+        isolated: self.crossOriginIsolated,
+        sab: typeof SharedArrayBuffer !== "undefined",
+      });
+      const created = PaddleOCR.create({
+        worker: false,
+        textDetectionModelName: HF.det.name,
+        textDetectionModelAsset: { url: detUrl },
+        textRecognitionModelName: HF.rec.name,
+        textRecognitionModelAsset: { url: recUrl },
+        ortOptions: {
+          backend: "wasm",
+          wasmPaths: ORT_WASM,
+          numThreads: 1,
+          simd: true,
+          proxy: false,
+          disableWasmProxy: true,
+        },
+      });
+      created.then((inst) => {
+        store.instance = inst;
+      });
+      store.instance = await created;
+    } finally {
+      window.clearInterval(beat);
+    }
+    emitProgress({ label: "PP-OCRv6 ready", pct: 100 });
+    return true;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "PP-OCRv6 failed to load";
+    lastError = message;
+    console.error("[ppocr]", err);
+    emitProgress({ label: message, pct: 0, error: true });
+    store.instance = null;
+    store.loading = null;
+    return false;
+  }
 }
 
 function normalizeBox(
@@ -394,7 +416,8 @@ export async function runPpocr(
   threshold: number,
   opts?: { reticle?: boolean },
 ): Promise<PpocrHit> {
-  if (!instance) {
+  const engine = ppocrStore().instance;
+  if (!engine) {
     return { ready: false, score: 0, text: "", crop: null };
   }
   const blob = await new Promise<Blob | null>((res) =>
@@ -403,7 +426,7 @@ export async function runPpocr(
   if (!blob) return { ready: false, score: 0, text: "", crop: null };
   let ocrRes: OcrResult;
   try {
-    ocrRes = await instance.predict(blob);
+    ocrRes = await engine.predict(blob);
   } catch {
     return { ready: false, score: 0, text: "", crop: null };
   }

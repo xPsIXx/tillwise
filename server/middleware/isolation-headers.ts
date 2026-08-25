@@ -17,6 +17,7 @@ export default async function isolationHeadersMiddleware(
     headers.delete("Cross-Origin-Opener-Policy");
     headers.delete("Cross-Origin-Embedder-Policy");
     headers.set("Cross-Origin-Resource-Policy", "cross-origin");
+    headers.set("Permissions-Policy", "camera=(self), microphone=()");
     return new Response(result.body, {
       status: result.status,
       statusText: result.statusText,
