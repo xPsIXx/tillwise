@@ -75,6 +75,7 @@ type Job = {
   captureId?: number;
   shotId?: number;
   error?: string;
+  confidence?: number | null;
 };
 
 const PLACEHOLDER_LABEL: LabelExtraction = {
@@ -508,9 +509,11 @@ export function CameraView({
               },
             }).catch(() => undefined);
           }
+          job.confidence = extractionConfidence(data);
           toast.success(`Added ${data.name}`);
           onSaved();
         } else {
+          job.confidence = extractionConfidence(data);
           setPending({ kind: "label", image: job.image, data, shotId: job.shotId });
         }
       } else {
@@ -542,11 +545,22 @@ export function CameraView({
       job.status = "error";
       job.error = err instanceof Error ? err.message : "Could not read that photo";
       toast.error(job.error);
+      if (job.shotId) {
+        await updateScanShot({
+          data: {
+            shotId: job.shotId,
+            lastRead:
+              job.mode === "label"
+                ? { ...PLACEHOLDER_LABEL, name: "Couldn't read", rawText: job.error }
+                : { ...emptyReceipt(), rawText: job.error },
+          },
+        }).catch(() => undefined);
+      }
       if (job.itemId) {
         await updateItem({
           data: {
             itemId: job.itemId,
-            patch: { name: "Couldn't read", matchStatus: "unmatched" },
+            patch: { name: "Couldn't read", matchStatus: "unmatched", matchConfidence: 0 },
           },
         }).catch(() => undefined);
         onSaved();
@@ -1051,6 +1065,19 @@ export function CameraView({
                     <LoaderCircle className="size-4 animate-spin text-fg" />
                   </span>
                 )}
+                <span className="absolute inset-x-0 bottom-0 bg-bg/75 px-0.5 py-0.5 text-center text-[8px] font-medium uppercase leading-tight text-fg">
+                  {j.status === "queued"
+                    ? "Pending"
+                    : j.status === "reading"
+                      ? "Reading"
+                      : j.status === "error"
+                        ? "Failed"
+                        : j.itemId || j.captureId
+                          ? j.confidence != null
+                            ? `Cart ${Math.round(j.confidence * 100)}%`
+                            : "In cart"
+                          : "Read"}
+                </span>
               </li>
             ))}
           </ul>

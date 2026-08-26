@@ -21,6 +21,7 @@ import {
 import { loadScanSettings, READ_OPTIONS, type ReadMode } from "@/lib/grocery/settings";
 import type { LabelExtraction, ReceiptExtraction, ScanShot } from "@/lib/grocery/types";
 import { money, tripDate, unitMoney, weight } from "@/lib/grocery/format";
+import { tagForShot, tagTone } from "@/lib/grocery/shot-status";
 import { cn } from "@/lib/utils";
 
 export function ShotSheet({
@@ -191,6 +192,22 @@ export function ShotSheet({
             <h3 className="font-display text-2xl">
               {label?.name ?? receipt?.storeName ?? (shot.kind === "label" ? "Label" : "Till tape")}
             </h3>
+            {(() => {
+              const tag = tagForShot(shot);
+              return (
+                <p className="mt-1">
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium",
+                      tagTone(tag.state),
+                    )}
+                  >
+                    {tag.label}
+                    {tag.confidence != null ? ` · ${Math.round(tag.confidence * 100)}%` : ""}
+                  </span>
+                </p>
+              );
+            })()}
           </div>
           <Button type="button" variant="ghost" size="icon" onClick={onClose} aria-label="Close">
             <X className="size-5" />
