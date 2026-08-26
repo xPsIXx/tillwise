@@ -4,6 +4,7 @@ export type DetectMode = "tensorflow" | "ppocr" | "shape" | "barcode" | "off";
 export type ReadMode = "local" | "ppocr" | "grok" | "device";
 export type VisionDetail = "low" | "high";
 export type PpocrFeel = "loose" | "normal" | "strict";
+export type PpocrSize = "tiny" | "small" | "medium";
 
 export type ScanSettings = {
   detect: DetectMode;
@@ -11,9 +12,12 @@ export type ScanSettings = {
   collate: LlmProvider;
   autoCapture: boolean;
   autoAdd: boolean;
+  debugSamples: boolean;
   confidence: number;
   visionDetail: VisionDetail;
   ppocrFeel: PpocrFeel;
+  ppocrDetSize: PpocrSize;
+  ppocrRecSize: PpocrSize;
 };
 
 export const DETECT_OPTIONS: { id: DetectMode; title: string; body: string }[] = [
@@ -40,7 +44,25 @@ export const DETECT_OPTIONS: { id: DetectMode; title: string; body: string }[] =
   {
     id: "off",
     title: "Manual shutter",
-    body: "You tap. Detection still draws the aim box, but never fires on its own.",
+    body: "Default. You tap the shutter. The aim box still helps you frame, but nothing fires on its own.",
+  },
+];
+
+export const PPOCR_SIZES: { id: PpocrSize; title: string; body: string }[] = [
+  {
+    id: "tiny",
+    title: "Tiny",
+    body: "Fastest on a phone (~1.5M). Best for live detect. Weaker on small English type.",
+  },
+  {
+    id: "small",
+    title: "Small",
+    body: "Balanced (~8M). Default for reading stickers.",
+  },
+  {
+    id: "medium",
+    title: "Medium",
+    body: "Sharpest (~35M). Slow to compile and to run. Use for hard stickers, not live detect.",
   },
 ];
 
@@ -48,17 +70,17 @@ export const READ_OPTIONS: { id: ReadMode; title: string; body: string }[] = [
   {
     id: "local",
     title: "Local vision LLM",
-    body: "Your server. OpenAI-compatible /v1/chat/completions at LLM_BASE_URL, model VISION_MODEL. Same as Qwen3-VL on llama-swap.",
+    body: "Your server at LLM_BASE_URL / VISION_MODEL. After a snap the photo goes straight to the cart and reads in the background — no confirm sheet.",
   },
   {
     id: "ppocr",
     title: "PP-OCRv6 on-device",
-    body: "Stays on the phone after a Hugging Face download: det + rec, then regex for name / kg / AED. Weak on till tape — receipts still use a vision LLM.",
+    body: "On this phone after a Hugging Face download. Reads in the background when “Add to cart, fill in later” is on. Weak on till tape — receipts still use a vision LLM.",
   },
   {
     id: "grok",
     title: "Grok vision",
-    body: "Off-device. grok-4.5 via xAI. Strong on messy stickers and till tape.",
+    body: "Off-device grok-4.5 via xAI. Same as local vision: files the photo immediately and fills fields in the background — no confirm sheet.",
   },
   {
     id: "device",
@@ -83,14 +105,17 @@ export const COLLATE_OPTIONS: { id: LlmProvider; title: string; body: string }[]
 const KEY = "tillwise.scan-settings";
 
 const DEFAULTS: ScanSettings = {
-  detect: "shape",
+  detect: "off",
   read: "ppocr",
   collate: "local",
-  autoCapture: true,
+  autoCapture: false,
   autoAdd: true,
+  debugSamples: false,
   confidence: 0.28,
   visionDetail: "high",
   ppocrFeel: "loose",
+  ppocrDetSize: "tiny",
+  ppocrRecSize: "small",
 };
 
 export const PPOCR_FEEL: { id: PpocrFeel; title: string; body: string }[] = [
@@ -149,6 +174,11 @@ function clampConfidence(n: number): number {
 
 const DETECTS: DetectMode[] = ["tensorflow", "ppocr", "shape", "barcode", "off"];
 const READS: ReadMode[] = ["local", "ppocr", "grok", "device"];
+const SIZES: PpocrSize[] = ["tiny", "small", "medium"];
+
+function asSize(v: unknown, fallback: PpocrSize): PpocrSize {
+  return SIZES.includes(v as PpocrSize) ? (v as PpocrSize) : fallback;
+}
 
 export function loadScanSettings(): ScanSettings {
   if (typeof window === "undefined") return DEFAULTS;
@@ -167,16 +197,22 @@ export function loadScanSettings(): ScanSettings {
     // v1 defaulted to local vision. With no model that path is dead — prefer PP-OCR.
     if (version < 2 && read === "local") read = "ppocr";
     return {
-      detect: DETECTS.includes(parsed.detect as DetectMode)
-        ? (parsed.detect as DetectMode)
-        : DEFAULTS.detect,
+      detect:
+        version < 4
+          ? "off"
+          : DETECTS.includes(parsed.detect as DetectMode)
+            ? (parsed.detect as DetectMode)
+            : DEFAULTS.detect,
       read,
       collate: parsed.collate === "grok" ? "grok" : "local",
-      autoCapture: parsed.autoCapture ?? DEFAULTS.autoCapture,
+      autoCapture: version < 4 ? false : Boolean(parsed.autoCapture),
       autoAdd: parsed.autoAdd ?? DEFAULTS.autoAdd,
+      debugSamples: Boolean(parsed.debugSamples),
       confidence: clampConfidence(Number(parsed.confidence ?? DEFAULTS.confidence)),
       visionDetail: parsed.visionDetail === "low" ? "low" : "high",
       ppocrFeel: feel,
+      ppocrDetSize: asSize(parsed.ppocrDetSize, DEFAULTS.ppocrDetSize),
+      ppocrRecSize: asSize(parsed.ppocrRecSize, DEFAULTS.ppocrRecSize),
     };
   } catch {
     return DEFAULTS;
@@ -185,7 +221,14 @@ export function loadScanSettings(): ScanSettings {
 
 export function saveScanSettings(next: ScanSettings) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(KEY, JSON.stringify({ ...next, v: 2 }));
+  window.localStorage.setItem(KEY, JSON.stringify({ ...next, v: 4 }));
+}
+
+/** Vision LLMs skip the confirm sheet — they file and read in the background. */
+export function holdForLook(cfg: ScanSettings): boolean {
+  if (cfg.autoAdd) return false;
+  if (cfg.read === "local" || cfg.read === "grok") return false;
+  return true;
 }
 
 export function effectiveRead(

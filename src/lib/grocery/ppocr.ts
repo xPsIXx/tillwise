@@ -1,32 +1,41 @@
 import { parseLabelText } from "./parse-local";
-import { loadScanSettings, ppocrParams, type PpocrFeel } from "./settings";
+import {
+  loadScanSettings,
+  ppocrParams,
+  type PpocrFeel,
+  type PpocrSize,
+} from "./settings";
 import type { LabelExtraction } from "./types";
 import type { EngineProgress } from "./tfjs";
 
-const LOCAL_DET = "/models/PP-OCRv6_small_det.tar";
-const LOCAL_REC = "/models/PP-OCRv6_small_rec.tar";
 const ENGINE_JS = "/ppocr/paddleocr.bundle.js";
 const ORT_WASM = "/ort/";
-const CACHE_NAME = "tillwise-ppocr-v6-small-2";
+const CACHE_NAME = "tillwise-ppocr-v6-sizes-1";
 
-const HF = {
-  det: {
-    name: "PP-OCRv6_small_det",
-    cacheKey: "https://tillwise.local/models/PP-OCRv6_small_det.tar",
-    localPath: LOCAL_DET,
-    onnxKind: "det-onnx",
-    ymlKind: "det-yml",
-  },
-  rec: {
-    name: "PP-OCRv6_small_rec",
-    cacheKey: "https://tillwise.local/models/PP-OCRv6_small_rec.tar",
-    localPath: LOCAL_REC,
-    onnxKind: "rec-onnx",
-    ymlKind: "rec-yml",
-  },
-} as const;
+type ModelKind = "det" | "rec";
 
-type Kind = keyof typeof HF;
+function currentSizes(): { det: PpocrSize; rec: PpocrSize } {
+  const cfg = loadScanSettings();
+  return { det: cfg.ppocrDetSize, rec: cfg.ppocrRecSize };
+}
+
+function sizeKey(): string {
+  const s = currentSizes();
+  return `${s.det}:${s.rec}`;
+}
+
+function modelSpec(kind: ModelKind, size: PpocrSize) {
+  const name = `PP-OCRv6_${size}_${kind}`;
+  return {
+    name,
+    cacheKey: `https://tillwise.local/models/${name}.tar`,
+    localPath: `/models/${name}.tar`,
+    onnxKind: `${size}-${kind}-onnx`,
+    ymlKind: `${size}-${kind}-yml`,
+  };
+}
+
+type Kind = ModelKind;
 
 type OcrItem = {
   text?: string;
@@ -61,12 +70,19 @@ type PpocrStore = {
   loading: Promise<boolean> | null;
   detUrl: string | null;
   recUrl: string | null;
+  key: string | null;
 };
 
 function ppocrStore(): PpocrStore {
   const g = globalThis as typeof globalThis & { __tillwisePpocr?: PpocrStore };
   if (!g.__tillwisePpocr) {
-    g.__tillwisePpocr = { instance: null, loading: null, detUrl: null, recUrl: null };
+    g.__tillwisePpocr = {
+      instance: null,
+      loading: null,
+      detUrl: null,
+      recUrl: null,
+      key: null,
+    };
   }
   return g.__tillwisePpocr;
 }
@@ -183,7 +199,7 @@ async function tarFromCache(kind: Kind): Promise<string | null> {
   if (typeof caches === "undefined") return null;
   try {
     const cache = await caches.open(CACHE_NAME);
-    const hit = await cache.match(HF[kind].cacheKey);
+    const hit = await cache.match(modelSpec(kind, currentSizes()[kind]).cacheKey);
     if (!hit || !hit.ok) return null;
     const blob = await hit.blob();
     if (blob.size < 1024) return null;
@@ -198,7 +214,7 @@ async function saveTar(kind: Kind, blob: Blob) {
   try {
     const cache = await caches.open(CACHE_NAME);
     await cache.put(
-      HF[kind].cacheKey,
+      modelSpec(kind, currentSizes()[kind]).cacheKey,
       new Response(blob, { headers: { "Content-Type": "application/x-tar" } }),
     );
   } catch {
@@ -214,10 +230,10 @@ async function downloadAndPack(
   kind: Kind,
   onProgress?: (p: EngineProgress) => void,
 ): Promise<string> {
-  const spec = HF[kind];
+  const spec = modelSpec(kind, currentSizes()[kind]);
   const label = kind === "det" ? "detection" : "recognition";
   const base = kind === "det" ? 18 : 48;
-  onProgress?.({ label: `Downloading ${label} model from Hugging Face…`, pct: base });
+  onProgress?.({ label: `Downloading ${label} ${spec.name}…`, pct: base });
   const onnx = await fetchBytes(hfProxy(spec.onnxKind), (got, total) => {
     const frac = total ? got / total : 0.5;
     onProgress?.({
@@ -239,7 +255,7 @@ async function fetchLocalTar(
   kind: Kind,
   onProgress?: (p: EngineProgress) => void,
 ): Promise<string> {
-  const spec = HF[kind];
+  const spec = modelSpec(kind, currentSizes()[kind]);
   const label = kind === "det" ? "detection" : "recognition";
   const base = kind === "det" ? 18 : 48;
   const bytes = await fetchBytes(spec.localPath, (got, total) => {
@@ -264,7 +280,7 @@ async function resolveTar(
   const cached = await tarFromCache(kind);
   const url = cached
     ? cached
-    : (await localTarExists(HF[kind].localPath))
+    : (await localTarExists(modelSpec(kind, currentSizes()[kind]).localPath))
       ? await fetchLocalTar(kind, onProgress)
       : await downloadAndPack(kind, onProgress);
   if (kind === "det") store.detUrl = url;
@@ -304,9 +320,15 @@ export async function loadPpocr(onProgress?: (p: EngineProgress) => void): Promi
   if (onProgress) progressListeners.add(onProgress);
   const store = ppocrStore();
   try {
-    if (store.instance) {
+    if (store.instance && store.key === sizeKey()) {
       onProgress?.({ label: "PP-OCRv6 ready", pct: 100 });
       return true;
+    }
+    if (store.key && store.key !== sizeKey()) {
+      store.instance = null;
+      store.loading = null;
+      store.detUrl = null;
+      store.recUrl = null;
     }
     if (!store.loading) store.loading = compilePpocr();
     return await store.loading;
@@ -350,9 +372,9 @@ async function compilePpocr(): Promise<boolean> {
       });
       const created = PaddleOCR.create({
         worker: false,
-        textDetectionModelName: HF.det.name,
+        textDetectionModelName: modelSpec("det", currentSizes().det).name,
         textDetectionModelAsset: { url: detUrl },
-        textRecognitionModelName: HF.rec.name,
+        textRecognitionModelName: modelSpec("rec", currentSizes().rec).name,
         textRecognitionModelAsset: { url: recUrl },
         ortOptions: {
           backend: "wasm",
@@ -367,6 +389,7 @@ async function compilePpocr(): Promise<boolean> {
         store.instance = inst;
       });
       store.instance = await created;
+      store.key = sizeKey();
     } finally {
       window.clearInterval(beat);
     }

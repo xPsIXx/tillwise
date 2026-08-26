@@ -10,8 +10,6 @@ const NAV = [
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const hideNav = pathname.startsWith("/scan");
-
   return (
     <div className="min-h-dvh bg-bg text-fg">
       <header className="sticky top-0 z-30 border-b border-border bg-bg/85 px-4 pr-16 pt-[max(0.75rem,env(safe-area-inset-top))] pb-3 backdrop-blur-md">
@@ -47,17 +45,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
-      <div
-        className={cn(
-          "mx-auto w-full max-w-3xl px-4",
-          hideNav ? "pb-0" : "pb-[calc(5.5rem+env(safe-area-inset-bottom))]",
-        )}
-      >
+      <div className="mx-auto w-full max-w-3xl px-4 pb-[calc(5.5rem+env(safe-area-inset-bottom))]">
         {children}
       </div>
 
-      {!hideNav && (
-        <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-bg/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-md">
+      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-bg/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-md">
           <div className="mx-auto grid max-w-3xl grid-cols-3 px-2 pt-1">
             {NAV.map((item) => {
               const active =
@@ -81,7 +73,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             })}
           </div>
         </nav>
-      )}
     </div>
   );
 }

@@ -62,7 +62,14 @@ export function ItemCard({
                   "Scanned item"}
             </p>
           </div>
-          <Badge tone={match.tone}>{match.label}</Badge>
+          <div className="flex shrink-0 flex-col items-end gap-1">
+            <Badge tone={match.tone}>{match.label}</Badge>
+            {item.matchConfidence != null && item.matchStatus !== "processing" ? (
+              <span className="text-[11px] tabular-nums text-subtle">
+                {Math.round(item.matchConfidence * 100)}% sure
+              </span>
+            ) : null}
+          </div>
         </div>
         <dl className="mt-2 grid grid-cols-3 gap-2 text-xs">
           <Stat label="Weight" value={weight(item.weightValue, item.weightUnit)} />

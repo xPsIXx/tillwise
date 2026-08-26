@@ -270,6 +270,31 @@ export function parseLabelText(raw: string, barcode: string | null): LabelExtrac
   };
 }
 
+export function extractionConfidence(data: LabelExtraction, ocrScore?: number): number {
+  let score = 0.15;
+  if (
+    data.name &&
+    !/^unknown/i.test(data.name) &&
+    !/^reading/i.test(data.name) &&
+    !/^item\s+\d/i.test(data.name)
+  ) {
+    score += 0.2;
+  }
+  if (data.weightValue != null) score += 0.15;
+  if (data.unitPrice != null) score += 0.15;
+  if (data.linePrice != null) score += 0.15;
+  if (data.barcode) score += 0.12;
+  if (data.weightValue != null && data.unitPrice != null && data.linePrice != null && data.weightValue > 0) {
+    const kg = (data.weightUnit ?? "kg").toLowerCase() === "g" ? data.weightValue / 1000 : data.weightValue;
+    const expected = data.unitPrice * kg;
+    if (Math.abs(expected - data.linePrice) <= Math.max(0.05, data.linePrice * 0.03)) score += 0.12;
+  }
+  if (ocrScore != null && Number.isFinite(ocrScore)) {
+    score = score * 0.7 + Math.min(1, Math.max(0, ocrScore)) * 0.3;
+  }
+  return Math.round(Math.min(0.99, Math.max(0.05, score)) * 100) / 100;
+}
+
 export function extractionIsThin(data: LabelExtraction): boolean {
   const unknown = !data.name || /^unknown/i.test(data.name) || /^item\s+\d/i.test(data.name);
   return unknown && data.weightValue == null && data.linePrice == null && data.unitPrice == null;

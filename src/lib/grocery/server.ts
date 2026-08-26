@@ -400,6 +400,7 @@ export const updateItem = createServerFn({ method: "POST" })
           | "unitPrice"
           | "linePrice"
           | "matchStatus"
+          | "matchConfidence"
           | "rawText"
         >
       >;
@@ -431,6 +432,8 @@ export const updateItem = createServerFn({ method: "POST" })
       unitPrice: p.unitPrice === undefined ? n(row.unit_price) : p.unitPrice,
       linePrice: p.linePrice === undefined ? n(row.line_price) : p.linePrice,
       matchStatus: p.matchStatus ?? row.match_status,
+      matchConfidence:
+        p.matchConfidence === undefined ? n(row.match_confidence) : p.matchConfidence,
       rawText: p.rawText === undefined ? row.raw_text : p.rawText,
     };
     const updated = await sql<ItemRow>`
@@ -447,6 +450,7 @@ export const updateItem = createServerFn({ method: "POST" })
              unit_price = ${next.unitPrice},
              line_price = ${next.linePrice},
              match_status = ${next.matchStatus},
+             match_confidence = ${next.matchConfidence},
              raw_text = ${next.rawText}
        where id = ${data.itemId}
        returning id, trip_id, source, name, brand, description, barcode, category,

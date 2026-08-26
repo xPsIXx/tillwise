@@ -10,6 +10,7 @@ import {
   COLLATE_OPTIONS,
   DETECT_OPTIONS,
   PPOCR_FEEL,
+  PPOCR_SIZES,
   READ_OPTIONS,
   loadScanSettings,
   saveScanSettings,
@@ -89,7 +90,7 @@ function SettingsPage() {
     return () => {
       cancelled = true;
     };
-  }, [settings.detect, settings.read]);
+  }, [settings.detect, settings.read, settings.ppocrDetSize, settings.ppocrRecSize]);
 
   function patch(next: Partial<ScanSettings>) {
     setSettings((prev) => {
@@ -207,6 +208,40 @@ function SettingsPage() {
               />
             </label>
           )}
+        </section>
+      )}
+
+      {(settings.detect === "ppocr" || settings.read === "ppocr") && (
+        <section className="mt-8">
+          <h2 className="font-display text-2xl">PP-OCR model sizes</h2>
+          <p className="mt-1 text-sm text-muted">
+            Detection finds the sticker. Recognition reads the letters. Tiny is for live
+            detect; small or medium for the snap.
+          </p>
+          <h3 className="mt-4 text-sm font-medium">Detection model</h3>
+          <div className="mt-2 grid gap-2">
+            {PPOCR_SIZES.map((opt) => (
+              <Choice
+                key={`det-${opt.id}`}
+                title={opt.title}
+                body={opt.body}
+                selected={settings.ppocrDetSize === opt.id}
+                onSelect={() => patch({ ppocrDetSize: opt.id })}
+              />
+            ))}
+          </div>
+          <h3 className="mt-5 text-sm font-medium">Recognition model</h3>
+          <div className="mt-2 grid gap-2">
+            {PPOCR_SIZES.map((opt) => (
+              <Choice
+                key={`rec-${opt.id}`}
+                title={opt.title}
+                body={opt.body}
+                selected={settings.ppocrRecSize === opt.id}
+                onSelect={() => patch({ ppocrRecSize: opt.id })}
+              />
+            ))}
+          </div>
         </section>
       )}
 
@@ -378,17 +413,27 @@ function SettingsPage() {
         <div className="mt-4 grid gap-2">
           <Choice
             title="Add to cart, fill in later"
-            body="The photo is filed immediately. Name, weight, and price land when reading finishes — keep pointing at the next sticker."
+            body="Default. The photo joins the cart as “Reading…”. PP-OCR, local vision, and Grok all keep working in the background and patch the row when they finish. Local vision and Grok never show a confirm sheet."
             selected={settings.autoAdd}
             onSelect={() => patch({ autoAdd: true })}
           />
           <Choice
             title="Hold for a look"
-            body="Reading still happens in the background. You confirm before it joins the cart."
+            body="Only for on-device readers (PP-OCR / browser text). You confirm the extract before it joins the cart. Local vision and Grok still skip this sheet."
             selected={!settings.autoAdd}
             onSelect={() => patch({ autoAdd: false })}
           />
         </div>
+      </section>
+
+      <section className="mt-10">
+        <h2 className="font-display text-2xl">Debug</h2>
+        <Toggle
+          label="Show sample stickers"
+          hint="Puts the “Try a sample” strip back on the scan page. Off by default so the receipt viewfinder can stay tall."
+          checked={settings.debugSamples}
+          onChange={(debugSamples) => patch({ debugSamples })}
+        />
       </section>
 
       <section className="mt-10 rounded-2xl bg-surface p-5 shadow-[var(--shadow-border)]">

@@ -29,15 +29,19 @@ import {
   RECEIPT_CAPTURE,
   type CropBox,
 } from "@/lib/grocery/image";
-import { extractionIsThin, readLabelOnDevice } from "@/lib/grocery/parse-local";
+import { extractionConfidence, extractionIsThin, readLabelOnDevice } from "@/lib/grocery/parse-local";
 import { loadPpocr, parsePpocrText, ppocrReady, runPpocr } from "@/lib/grocery/ppocr";
 import { SAMPLE_LABELS, SAMPLE_RECEIPTS } from "@/lib/grocery/sample-data";
 import { fillFromMemory } from "@/lib/grocery/catalog";
 import {
+  DETECT_OPTIONS,
+  READ_OPTIONS,
   effectiveRead,
+  holdForLook,
   loadScanSettings,
   saveScanSettings,
   visionProvider,
+  type DetectMode,
   type ScanSettings,
 } from "@/lib/grocery/settings";
 import { loadTfjs, scoreTfFrame, tfReady, type EngineProgress } from "@/lib/grocery/tfjs";
@@ -258,6 +262,7 @@ export function CameraView({
   const jobsRef = useRef<Job[]>([]);
   const runningRef = useRef(0);
   const settingsRef = useRef<ScanSettings>(loadScanSettings());
+  const [scanCfg, setScanCfg] = useState<ScanSettings>(() => settingsRef.current);
   const lastCropRef = useRef<CropBox | null>(null);
   const [camera, setCamera] = useState<CameraStatus>("starting");
   const [torch, setTorch] = useState(false);
@@ -488,6 +493,7 @@ export function CameraView({
                 unitPrice: data.unitPrice,
                 linePrice: data.linePrice,
                 matchStatus: "unmatched",
+                matchConfidence: extractionConfidence(data),
                 rawText: data.rawText,
               },
             },
@@ -575,7 +581,7 @@ export function CameraView({
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const job: Job = { id, mode: scanMode, image: dataUrl, barcode, status: "queued" };
     const thumb = await makeThumbnail(dataUrl);
-    if (cfg.autoAdd) {
+    if (!holdForLook(cfg)) {
       if (scanMode === "label") {
         const item = await addLabelItem({
           data: {
@@ -773,7 +779,7 @@ export function CameraView({
       const sample = SAMPLE_LABELS.find((s) => s.id === id);
       if (!sample) return;
       const image = await publicImageToDataUrl(sample.image);
-      if (settingsRef.current.autoAdd) {
+      if (!holdForLook(settingsRef.current)) {
         const item = await addLabelItem({
           data: { tripId, extracted: sample.data, thumbnailData: sample.image },
         });
@@ -796,7 +802,7 @@ export function CameraView({
       const sample = SAMPLE_RECEIPTS.find((s) => s.id === id);
       if (!sample) return;
       const image = await publicImageToDataUrl(sample.image);
-      if (settingsRef.current.autoAdd) {
+      if (!holdForLook(settingsRef.current)) {
         const cap = await addReceiptCapture({
           data: { tripId, extracted: sample.data, thumbnailData: sample.image },
         });
@@ -893,7 +899,7 @@ export function CameraView({
   const inflight = jobs.filter((j) => j.status === "queued" || j.status === "reading");
 
   return (
-    <div className="relative -mx-4 flex h-[calc(100svh-4.25rem)] flex-col overflow-hidden bg-bg">
+    <div className="relative -mx-4 flex h-[calc(100svh-4.25rem-5.75rem)] flex-col overflow-hidden bg-bg">
       <div className="relative min-h-0 flex-1 overflow-hidden bg-black">
         <video
           ref={videoRef}
@@ -969,7 +975,7 @@ export function CameraView({
           <div
             className={cn(
               "absolute left-[12%] right-[12%] rounded-[28px] border-2",
-              mode === "receipt" ? "top-[10%] bottom-[18%]" : "top-[18%] bottom-[28%]",
+              mode === "receipt" ? "top-[5%] bottom-[7%]" : "top-[16%] bottom-[26%]",
               locked ? "border-accent viewfinder-pulse" : "border-fg/35",
             )}
           />
@@ -1051,7 +1057,7 @@ export function CameraView({
         )}
       </div>
 
-      <div className="shrink-0 border-t border-border bg-bg px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
+      <div className="shrink-0 border-t border-border bg-bg px-4 pb-3 pt-3">
         <div className="mb-3 grid grid-cols-2 rounded-xl bg-elevated p-1">
           {(["label", "receipt"] as const).map((m) => (
             <button
@@ -1072,6 +1078,51 @@ export function CameraView({
             </button>
           ))}
         </div>
+
+        {mode === "label" && (
+          <label className="mb-3 block">
+            <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-subtle">
+              Detection
+            </span>
+            <select
+              className="mt-1 h-10 w-full rounded-lg bg-elevated px-3 text-sm"
+              value={scanCfg.detect}
+              onChange={(e) => {
+                const detect = e.target.value as DetectMode;
+                const next = {
+                  ...loadScanSettings(),
+                  detect,
+                  autoCapture: detect === "off" ? false : loadScanSettings().autoCapture,
+                };
+                saveScanSettings(next);
+                settingsRef.current = next;
+                setScanCfg(next);
+                setHint(
+                  detect === "off"
+                    ? "Manual shutter — tap when the sticker is in frame"
+                    : DETECT_OPTIONS.find((o) => o.id === detect)?.title ?? "Detect",
+                );
+              }}
+            >
+              {DETECT_OPTIONS.map((opt) => (
+                <option key={opt.id} value={opt.id}>
+                  {opt.title}
+                </option>
+              ))}
+            </select>
+            <span className="mt-1 block text-xs text-muted">
+              {DETECT_OPTIONS.find((o) => o.id === scanCfg.detect)?.body}
+            </span>
+          </label>
+        )}
+        <p className="mb-3 text-xs text-muted">
+          Reader: {READ_OPTIONS.find((o) => o.id === scanCfg.read)?.title}.{" "}
+          {scanCfg.read === "local" || scanCfg.read === "grok"
+            ? "Snaps go to the cart and read in the background — no confirm sheet."
+            : holdForLook(scanCfg)
+              ? "Hold for a look is on — confirm before it joins the cart."
+              : "Add to cart, fill in later — reading continues in the background, including PP-OCR."}
+        </p>
 
         <div className="flex items-center justify-between gap-3">
           <label className="grid size-12 place-items-center rounded-lg bg-elevated">
@@ -1102,6 +1153,7 @@ export function CameraView({
           <div className="size-12" />
         </div>
 
+        {scanCfg.debugSamples && (
         <div className="mt-4">
           <p className="text-xs font-medium uppercase tracking-[0.16em] text-subtle">
             Try a sample
@@ -1124,6 +1176,7 @@ export function CameraView({
             ))}
           </div>
         </div>
+        )}
       </div>
 
       {pending && (
