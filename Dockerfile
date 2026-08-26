@@ -25,14 +25,18 @@ ENV NODE_ENV=production \
     PORT=8080 \
     HOST=0.0.0.0 \
     NITRO_PORT=8080 \
-    NITRO_HOST=0.0.0.0
+    NITRO_HOST=0.0.0.0 \
+    PGLITE_DATA_DIR=/data/pglite
 RUN apt-get update \
   && apt-get install -y --no-install-recommends curl ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /data/pglite \
+  && chown -R node:node /data
 COPY --from=build /app/.output ./.output
 COPY --from=build /app/migrations ./migrations
 COPY --from=build /app/package.json ./package.json
 COPY --from=deps /app/node_modules ./node_modules
+VOLUME ["/data"]
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD curl -sf http://127.0.0.1:8080/ >/dev/null || exit 1

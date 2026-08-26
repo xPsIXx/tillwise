@@ -17,7 +17,16 @@ Actions:  https://github.com/xPsIXx/tillwise/actions
 Package:  https://github.com/xPsIXx/tillwise/pkgs/container/tillwise
 
   docker pull ghcr.io/xpsixx/tillwise:latest
-  docker run --rm -p 8080:8080 ghcr.io/xpsixx/tillwise:latest
+  docker run -d --name tillwise -p 8080:8080 \
+    -v tillwise-data:/data \
+    ghcr.io/xpsixx/tillwise:latest
+
+  # or
+  docker compose up -d
+
+The image ships an embedded Postgres (PGLite) and writes it to /data/pglite
+inside the container. Mount a volume on /data or trips vanish when the
+container is removed. Compose already does this as `tillwise-data`.
 
 Environment (never hard-coded in the app)
 -----------------------------------------
@@ -32,7 +41,10 @@ Copy these into the process environment. Environment wins over the Settings form
                    If unset, VISION_MODEL is used.
   LLM_API_KEY      Optional bearer token for the local server
   XAI_API_KEY      Optional. Only if you want Grok as a reader/collate option.
-  DATABASE_URL     Optional Postgres URL. If unset, PGLite (embedded) is used.
+  DATABASE_URL     Optional Postgres URL (Neon, etc.). If unset, the
+                   shipped PGLite files under PGLITE_DATA_DIR are used.
+  PGLITE_DATA_DIR  Folder for those files. Docker default: /data/pglite
+                   Set to `memory` to wipe on every restart.
 
 The app calls:
 

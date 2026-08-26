@@ -57,12 +57,17 @@ GitHub Actions on `main` publishes `ghcr.io/xpsixx/tillwise:latest`.
 
 ```bash
 docker pull ghcr.io/xpsixx/tillwise:latest
-docker run --rm -p 8080:8080 \
+docker run -d --name tillwise -p 8080:8080 \
+  -v tillwise-data:/data \
   -e LLM_BASE_URL=http://192.168.1.2:8088 \
   -e VISION_MODEL=Qwen3-VL-8B \
   -e TEXT_MODEL=Qwen3.5-9B \
   ghcr.io/xpsixx/tillwise:latest
 ```
+
+Trips, photos, and settings live in an embedded Postgres (PGLite) on the
+`tillwise-data` volume at `/data/pglite`. No separate database to install.
+Point `DATABASE_URL` at Neon or any Postgres only if you outgrow that file.
 
 - Repo: https://github.com/xPsIXx/tillwise
 - Actions: https://github.com/xPsIXx/tillwise/actions

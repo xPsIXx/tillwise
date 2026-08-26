@@ -1,3 +1,5 @@
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { pendingMigrations } from "../../scripts/migration-plan.mjs";
 
 /** Which database backend is active. */
@@ -17,6 +19,25 @@ const databaseUrl =
  * included. Swap in Neon later by just setting `DATABASE_URL`; no code changes.
  */
 export const dbSource: DbSource = databaseUrl ? "neon" : "pglite";
+
+/**
+ * Disk folder for the embedded PGLite files when `DATABASE_URL` is unset.
+ *
+ * - `PGLITE_DATA_DIR=/data/pglite` — explicit path (Docker default)
+ * - `PGLITE_DATA_DIR=memory` — ephemeral, wiped on process exit
+ * - unset in production — `/data/pglite`
+ * - unset in dev — `./data/pglite` so `npm run dev` restarts keep trips
+ */
+export function pgliteDataDir(): string | undefined {
+  const raw =
+    typeof process !== "undefined" ? process.env.PGLITE_DATA_DIR : undefined;
+  const trimmed = raw?.trim();
+  if (trimmed === "memory" || trimmed === ":memory:") return undefined;
+  if (trimmed) return resolve(trimmed);
+  if (typeof process === "undefined") return undefined;
+  if (process.env.NODE_ENV === "production") return resolve("/data/pglite");
+  return resolve(process.cwd(), "data", "pglite");
+}
 
 /**
  * Minimal shared SQL surface, satisfied by both Neon and PGLite. Both the
@@ -107,17 +128,22 @@ function createNeonSql(): Promise<Sql> {
 
 async function createPgliteSql(): Promise<Sql> {
   // Embedded Postgres, imported on demand so it never loads on the Neon path.
-  // One in-memory instance per process, shared across HMR module instances, so
-  // data survives source edits (it resets on dev-server restart).
+  // One instance per process. When a data dir is set the files live on disk
+  // (Docker volume / ./data/pglite) so trips survive restarts.
   globalRef.__pgliteInstance__ ??= (async () => {
     const { PGlite } = await import("@electric-sql/pglite");
-    const pg = new PGlite({
-      parsers: {
-        [OID_INT8]: Number,
-        [OID_DATE]: identity,
-        [OID_INTERVAL]: identity,
-      },
-    });
+    const dataDir = pgliteDataDir();
+    if (dataDir) mkdirSync(dataDir, { recursive: true });
+    console.info("[db] PGLite", dataDir ? `on disk at ${dataDir}` : "in memory");
+    const parsers = {
+      [OID_INT8]: Number,
+      [OID_DATE]: identity,
+      [OID_INTERVAL]: identity,
+    };
+    // First-arg path selects NodeFS; omit it for the in-memory VFS.
+    const pg = dataDir
+      ? new PGlite(dataDir, { parsers })
+      : new PGlite({ parsers });
     await pg.waitReady;
     await pg.exec(
       "create table if not exists _migrations (name text primary key, applied_at timestamptz not null default now())",

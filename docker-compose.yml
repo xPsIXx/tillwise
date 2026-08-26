@@ -11,4 +11,10 @@ services:
       LLM_API_KEY: ${LLM_API_KEY:-}
       XAI_API_KEY: ${XAI_API_KEY:-}
       DATABASE_URL: ${DATABASE_URL:-}
+      PGLITE_DATA_DIR: /data/pglite
+    volumes:
+      - tillwise-data:/data
     restart: unless-stopped
+
+volumes:
+  tillwise-data:
