@@ -47,6 +47,91 @@ export function chatCompletionsUrl(base: string): string {
   return `${b}/v1/chat/completions`;
 }
 
+export function modelsUrl(base: string): string {
+  const b = base.trim().replace(/\/+$/, "");
+  if (/\/models$/i.test(b)) return b;
+  if (/\/v1$/i.test(b)) return `${b}/models`;
+  if (/\/chat\/completions$/i.test(b)) return b.replace(/\/chat\/completions$/i, "/models");
+  return `${b}/v1/models`;
+}
+
+function parseModelIds(payload: unknown): string[] {
+  const ids = new Set<string>();
+  if (payload && typeof payload === "object") {
+    const obj = payload as Record<string, unknown>;
+    const data = obj.data;
+    if (Array.isArray(data)) {
+      for (const row of data) {
+        if (row && typeof row === "object" && typeof (row as { id?: unknown }).id === "string") {
+          ids.add((row as { id: string }).id);
+        } else if (typeof row === "string") ids.add(row);
+      }
+    }
+    const models = obj.models;
+    if (Array.isArray(models)) {
+      for (const row of models) {
+        if (typeof row === "string") ids.add(row);
+        else if (row && typeof row === "object" && typeof (row as { id?: unknown }).id === "string") {
+          ids.add((row as { id: string }).id);
+        }
+      }
+    }
+  }
+  return [...ids].sort((a, b) => a.localeCompare(b));
+}
+
+export async function listRemoteModels(input: {
+  which: "local" | "byok";
+  baseUrl?: string | null;
+  apiKey?: string | null;
+}): Promise<{ models: string[]; error: string | null; url: string | null }> {
+  const cfg = await loadLlmConfig();
+  const saved = await readSaved();
+  const base =
+    trim(input.baseUrl) ??
+    (input.which === "byok" ? cfg.byokUrl : cfg.localUrl);
+  if (!base) {
+    return { models: [], error: "Add an endpoint first.", url: null };
+  }
+  const key =
+    trim(input.apiKey) ??
+    (input.which === "byok"
+      ? env("BYOK_API_KEY") ?? trim(saved.byok_api_key) ?? env("OPENAI_API_KEY")
+      : env("LLM_API_KEY") ?? trim(saved.llm_api_key));
+  const url = modelsUrl(base);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20_000);
+  try {
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (key) headers.Authorization = `Bearer ${key}`;
+    const res = await fetch(url, { headers, signal: ctrl.signal });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      return {
+        models: [],
+        error: `Could not list models (${res.status}). ${body.slice(0, 160)}`.trim(),
+        url,
+      };
+    }
+    const payload = await res.json().catch(() => null);
+    const models = parseModelIds(payload);
+    if (!models.length) {
+      return { models: [], error: "The endpoint returned no model ids.", url };
+    }
+    return { models, error: null, url };
+  } catch (err) {
+    const message =
+      err instanceof Error && err.name === "AbortError"
+        ? "Listing models timed out."
+        : err instanceof Error
+          ? err.message
+          : "Could not list models.";
+    return { models: [], error: message, url };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function loadLlmConfig(): Promise<LlmConfig> {
   const saved = await readSaved();
   const envUrl = env("LLM_BASE_URL");

@@ -1197,6 +1197,19 @@ export const getLlmConfig = createServerFn({ method: "GET" }).handler(async () =
   return loadLlmConfig();
 });
 
+export const listLlmModels = createServerFn({ method: "POST" })
+  .validator(
+    (input: {
+      which: "local" | "byok";
+      baseUrl?: string | null;
+      apiKey?: string | null;
+    }) => input,
+  )
+  .handler(async ({ data }) => {
+    const { listRemoteModels } = await import("./llm");
+    return listRemoteModels(data);
+  });
+
 export const saveLlmConfig = createServerFn({ method: "POST" })
   .validator(
     (input: {

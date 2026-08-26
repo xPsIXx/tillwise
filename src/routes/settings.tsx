@@ -17,7 +17,7 @@ import {
   type ScanSettings,
   type VisionDetail,
 } from "@/lib/grocery/settings";
-import { getLlmConfig, saveLlmConfig } from "@/lib/grocery/server";
+import { getLlmConfig, listLlmModels, saveLlmConfig } from "@/lib/grocery/server";
 import { loadTfjs, tfReady, type EngineProgress } from "@/lib/grocery/tfjs";
 import { cn } from "@/lib/utils";
 
@@ -34,6 +34,10 @@ function SettingsPage() {
   const [byokVision, setByokVision] = useState("");
   const [byokText, setByokText] = useState("");
   const [byokKey, setByokKey] = useState("");
+  const [localModels, setLocalModels] = useState<string[]>([]);
+  const [byokModels, setByokModels] = useState<string[]>([]);
+  const [localModelErr, setLocalModelErr] = useState<string | null>(null);
+  const [byokModelErr, setByokModelErr] = useState<string | null>(null);
   const [engine, setEngine] = useState<EngineProgress | null>(null);
   const textOk = useMemo(() => deviceTextAvailable(), []);
 
@@ -111,6 +115,43 @@ function SettingsPage() {
     });
   }
 
+  async function loadModels(which: "local" | "byok", opts?: { quiet?: boolean }) {
+    const draft =
+      which === "local"
+        ? { baseUrl: url, apiKey: apiKey.trim() || undefined }
+        : { baseUrl: byokUrl, apiKey: byokKey.trim() || undefined };
+    if (which === "local") setLocalModelErr(null);
+    else setByokModelErr(null);
+    try {
+      const res = await listLlmModels({
+        data: { which, baseUrl: draft.baseUrl, apiKey: draft.apiKey },
+      });
+      if (which === "local") {
+        setLocalModels(res.models);
+        setLocalModelErr(res.error);
+      } else {
+        setByokModels(res.models);
+        setByokModelErr(res.error);
+      }
+      if (!opts?.quiet) {
+        if (res.models.length) toast.success(`${res.models.length} models on that endpoint`);
+        else if (res.error) toast.error(res.error);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Could not list models";
+      if (which === "local") setLocalModelErr(message);
+      else setByokModelErr(message);
+      toast.error(message);
+    }
+  }
+
+  useEffect(() => {
+    if (!cfg) return;
+    if (cfg.localUrl) void loadModels("local", { quiet: true });
+    if (cfg.byokUrl && cfg.hasByokKey) void loadModels("byok", { quiet: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cfg?.localUrl, cfg?.byokUrl, cfg?.hasByokKey, cfg?.hasLocalKey]);
+
   const save = useMutation({
     mutationFn: () =>
       saveLlmConfig({
@@ -130,6 +171,8 @@ function SettingsPage() {
       setApiKey("");
       setByokKey("");
       void qc.setQueryData(["llm-config"], next);
+      if (next.localUrl) void loadModels("local", { quiet: true });
+      if (next.byokUrl && next.hasByokKey) void loadModels("byok", { quiet: true });
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not save"),
   });
@@ -361,28 +404,6 @@ function SettingsPage() {
                 autoComplete="off"
               />
             </label>
-            <label className="block text-xs font-medium text-muted">
-              VISION_MODEL
-              <Input
-                className="mt-1"
-                value={vision}
-                disabled={localLocked}
-                placeholder="Qwen3-VL-8B"
-                onChange={(e) => setVision(e.target.value)}
-                autoComplete="off"
-              />
-            </label>
-            <label className="block text-xs font-medium text-muted">
-              TEXT_MODEL
-              <Input
-                className="mt-1"
-                value={text}
-                disabled={localLocked}
-                placeholder="Qwen3.5-9B"
-                onChange={(e) => setText(e.target.value)}
-                autoComplete="off"
-              />
-            </label>
             {!localLocked && (
               <label className="block text-xs font-medium text-muted">
                 API key {cfg?.hasLocalKey ? "(saved)" : "(optional)"}
@@ -396,6 +417,33 @@ function SettingsPage() {
                 />
               </label>
             )}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={!url.trim()}
+                onClick={() => void loadModels("local")}
+              >
+                List models
+              </Button>
+              {localModelErr ? <span className="text-xs text-red-600">{localModelErr}</span> : null}
+            </div>
+            <ModelPicker
+              label="Vision model"
+              value={vision}
+              models={localModels}
+              disabled={localLocked}
+              placeholder="Qwen3-VL-8B"
+              onChange={setVision}
+            />
+            <ModelPicker
+              label="Text model"
+              value={text}
+              models={localModels}
+              disabled={localLocked}
+              placeholder="Qwen3.5-9B"
+              onChange={setText}
+            />
             {!localLocked && (
               <Button type="submit" disabled={save.isPending}>
                 {save.isPending ? "Saving…" : "Save local models"}
@@ -430,28 +478,6 @@ function SettingsPage() {
                 autoComplete="off"
               />
             </label>
-            <label className="block text-xs font-medium text-muted">
-              Vision model
-              <Input
-                className="mt-1"
-                value={byokVision}
-                disabled={byokLocked}
-                placeholder="gpt-4o-mini"
-                onChange={(e) => setByokVision(e.target.value)}
-                autoComplete="off"
-              />
-            </label>
-            <label className="block text-xs font-medium text-muted">
-              Text / collate model
-              <Input
-                className="mt-1"
-                value={byokText}
-                disabled={byokLocked}
-                placeholder="gpt-4o-mini"
-                onChange={(e) => setByokText(e.target.value)}
-                autoComplete="off"
-              />
-            </label>
             {!byokLocked && (
               <label className="block text-xs font-medium text-muted">
                 API key {cfg?.hasByokKey ? "(saved)" : ""}
@@ -465,6 +491,33 @@ function SettingsPage() {
                 />
               </label>
             )}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={!byokUrl.trim() || (!byokKey.trim() && !cfg?.hasByokKey)}
+                onClick={() => void loadModels("byok")}
+              >
+                List models
+              </Button>
+              {byokModelErr ? <span className="text-xs text-red-600">{byokModelErr}</span> : null}
+            </div>
+            <ModelPicker
+              label="Vision model"
+              value={byokVision}
+              models={byokModels}
+              disabled={byokLocked}
+              placeholder="gpt-4o-mini"
+              onChange={setByokVision}
+            />
+            <ModelPicker
+              label="Text / collate model"
+              value={byokText}
+              models={byokModels}
+              disabled={byokLocked}
+              placeholder="gpt-4o-mini"
+              onChange={setByokText}
+            />
             {!byokLocked && (
               <Button type="submit" disabled={save.isPending}>
                 {save.isPending ? "Saving…" : "Save BYOK"}
@@ -548,6 +601,71 @@ function SettingsPage() {
         </dl>
       </section>
     </main>
+  );
+}
+
+function ModelPicker({
+  label,
+  value,
+  models,
+  disabled,
+  placeholder,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  models: string[];
+  disabled?: boolean;
+  placeholder: string;
+  onChange: (next: string) => void;
+}) {
+  const custom = value && !models.includes(value);
+  return (
+    <label className="block text-xs font-medium text-muted">
+      {label}
+      {models.length > 0 ? (
+        <select
+          className="mt-1 h-11 w-full rounded-md bg-elevated px-3 text-sm text-fg"
+          value={custom ? "__custom__" : value}
+          disabled={disabled}
+          onChange={(e) => {
+            if (e.target.value === "__custom__") return;
+            onChange(e.target.value);
+          }}
+        >
+          <option value="">Choose a model…</option>
+          {models.map((id) => (
+            <option key={id} value={id}>
+              {id}
+            </option>
+          ))}
+          {custom ? <option value="__custom__">{value}</option> : null}
+        </select>
+      ) : (
+        <Input
+          className="mt-1"
+          value={value}
+          disabled={disabled}
+          placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value)}
+          autoComplete="off"
+        />
+      )}
+      {models.length > 0 ? (
+        <Input
+          className="mt-2"
+          value={value}
+          disabled={disabled}
+          placeholder="Or type a model id"
+          onChange={(e) => onChange(e.target.value)}
+          autoComplete="off"
+        />
+      ) : (
+        <span className="mt-1 block text-[11px] text-subtle">
+          Save the endpoint and key, then tap List models for a dropdown.
+        </span>
+      )}
+    </label>
   );
 }
 
