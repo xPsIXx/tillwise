@@ -36,7 +36,7 @@ function joinText(parts: string[]): string {
     .join("\n");
 }
 
-function parseFields(raw: string, barcode: string | null): LabelExtraction {
+export function parseLabelText(raw: string, barcode: string | null): LabelExtraction {
   const weight =
     raw.match(/(\d+(?:[.,]\d+)?)\s*(kg|g|lb|oz|ml|l)\b/i) ??
     raw.match(/\b(kg|g)\s*(\d+(?:[.,]\d+)?)/i);
@@ -109,5 +109,5 @@ export async function readLabelOnDevice(
     }
   }
   if (!raw && !barcode) return null;
-  return parseFields(raw, barcode);
+  return parseLabelText(raw, barcode);
 }

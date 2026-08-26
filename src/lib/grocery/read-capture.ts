@@ -1,8 +1,9 @@
 import { imageToCanvas, loadImage } from "./image";
 import { extractionIsThin, readLabelOnDevice } from "./parse-local";
 import { loadPpocr, parsePpocrText, ppocrReady, runPpocr } from "./ppocr";
-import { scanLabelPhoto, scanReceiptPhoto } from "./server";
-import { loadScanSettings, visionProvider, type ReadMode } from "./settings";
+import { fillFromMemory } from "./catalog";
+import { lookupProduct, scanLabelPhoto, scanReceiptPhoto } from "./server";
+import { effectiveRead, loadScanSettings, visionProvider, type ReadMode } from "./settings";
 import type { LabelExtraction, LlmProvider, ReceiptExtraction } from "./types";
 
 export async function readLabelCapture(
@@ -11,24 +12,28 @@ export async function readLabelCapture(
   read?: ReadMode,
 ): Promise<LabelExtraction> {
   const cfg = loadScanSettings();
-  const mode = read ?? cfg.read;
+  const mode = effectiveRead({ ...cfg, read: read ?? cfg.read });
   if (mode === "ppocr") {
     const ok = ppocrReady() || (await loadPpocr());
     if (!ok) throw new Error("PP-OCRv6 did not load");
     const img = await loadImage(image);
-    const canvas = imageToCanvas(img, 960);
-    const hit = await runPpocr(canvas, 0.15, { reticle: false });
-    const data = parsePpocrText(hit.text, barcode);
+    const canvas = imageToCanvas(img, 1280);
+    const hit = await runPpocr(canvas, undefined, { reticle: false, feel: cfg.ppocrFeel });
+    let data = parsePpocrText(hit.text, barcode);
     if (extractionIsThin(data) && !hit.text && !barcode) {
       throw new Error("PP-OCR found no product text");
     }
+    const mem = await lookupProduct({
+      data: { barcode: data.barcode ?? barcode, name: data.name },
+    }).catch(() => null);
+    if (mem) data = fillFromMemory(data, mem);
     return data;
   }
   if (mode === "device") {
     const img = await loadImage(image);
     const data = await readLabelOnDevice(img, barcode);
     if (!data) throw new Error("Browser text found nothing on this photo");
-    return data;
+    return withMemory(data, barcode);
   }
   const result = await scanLabelPhoto({
     data: {
@@ -41,7 +46,14 @@ export async function readLabelCapture(
   if (!result.ok) throw new Error(result.error);
   const data = result.data;
   if (barcode && !data.barcode) data.barcode = barcode;
-  return data;
+  return withMemory(data, barcode);
+}
+
+async function withMemory(data: LabelExtraction, barcode: string | null): Promise<LabelExtraction> {
+  const mem = await lookupProduct({
+    data: { barcode: data.barcode ?? barcode, name: data.name },
+  }).catch(() => null);
+  return mem ? fillFromMemory(data, mem) : data;
 }
 
 export async function readReceiptCapture(

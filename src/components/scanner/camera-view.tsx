@@ -28,13 +28,21 @@ import {
 import { extractionIsThin, readLabelOnDevice } from "@/lib/grocery/parse-local";
 import { loadPpocr, parsePpocrText, ppocrReady, runPpocr } from "@/lib/grocery/ppocr";
 import { SAMPLE_LABELS, SAMPLE_RECEIPTS } from "@/lib/grocery/sample-data";
-import { loadScanSettings, visionProvider, type ScanSettings } from "@/lib/grocery/settings";
+import { fillFromMemory } from "@/lib/grocery/catalog";
+import {
+  effectiveRead,
+  loadScanSettings,
+  saveScanSettings,
+  visionProvider,
+  type ScanSettings,
+} from "@/lib/grocery/settings";
 import { loadTfjs, scoreTfFrame, tfReady, type EngineProgress } from "@/lib/grocery/tfjs";
 import {
   addLabelItem,
   addReceiptCapture,
   addScanShot,
   getLlmConfig,
+  lookupProduct,
   scanLabelPhoto,
   scanReceiptPhoto,
   updateItem,
@@ -300,15 +308,18 @@ export function CameraView({
     void getLlmConfig().then((llm) => {
       if (cancelled) return;
       const cfg = loadScanSettings();
+      const nextRead = effectiveRead(cfg, llm);
+      if (nextRead !== cfg.read) {
+        saveScanSettings({ ...cfg, read: nextRead });
+        settingsRef.current = { ...cfg, read: nextRead };
+      }
       if (cfg.read === "local" && !llm.localAvailable) {
-        setReaderWarn(
-          "Local vision isn’t set. Live reads will fail — use PP-OCR, or add LLM_BASE_URL in Settings.",
-        );
+        setReaderWarn("No local vision model — labels use PP-OCR on this phone. Add LLM_BASE_URL for receipts.");
       } else if (cfg.read === "grok" && !llm.grokAvailable) {
-        setReaderWarn("Grok isn’t available on this server. Pick PP-OCR or a local model in Settings.");
+        setReaderWarn("Grok isn’t available. Labels use PP-OCR on this phone.");
       } else if (mode === "receipt" && !llm.localAvailable && !llm.grokAvailable) {
         setReaderWarn(
-          "Till tape still needs a vision model. Labels can use PP-OCR on this phone — add LLM_BASE_URL in Settings for receipts.",
+          "Till tape still needs a vision model. Labels can use PP-OCR — add LLM_BASE_URL in Settings for receipts.",
         );
       } else {
         setReaderWarn(null);
@@ -416,17 +427,18 @@ export function CameraView({
     try {
       if (job.mode === "label") {
         let data: LabelExtraction | null = null;
-        if (cfg.read === "ppocr") {
+        const read = effectiveRead(cfg);
+        if (read === "ppocr") {
           const ok = ppocrReady() || (await loadPpocr());
           if (!ok) throw new Error("PP-OCRv6 did not load");
           const img = await loadImage(job.image);
-          const canvas = imageToCanvas(img, 960);
-          const hit = await runPpocr(canvas, 0.15, { reticle: false });
+          const canvas = imageToCanvas(img, 1280);
+          const hit = await runPpocr(canvas, undefined, { reticle: false, feel: cfg.ppocrFeel });
           data = parsePpocrText(hit.text, job.barcode);
           if (extractionIsThin(data) && !hit.text && !job.barcode) {
             throw new Error("PP-OCR found no product text");
           }
-        } else if (cfg.read === "device") {
+        } else if (read === "device") {
           const img = await loadImage(job.image);
           data = await readLabelOnDevice(img, job.barcode);
         } else {
@@ -435,7 +447,7 @@ export function CameraView({
               imageDataUrl: job.image,
               barcodeHint: job.barcode,
               detail: cfg.visionDetail,
-              provider: cfg.read === "grok" ? "grok" : "local",
+              provider: read === "grok" ? "grok" : "local",
             },
           });
           if (!result.ok) throw new Error(result.error);
@@ -443,6 +455,10 @@ export function CameraView({
           if (job.barcode && !data.barcode) data.barcode = job.barcode;
         }
         if (!data) throw new Error("Nothing readable on this photo");
+        const mem = await lookupProduct({
+          data: { barcode: data.barcode ?? job.barcode, name: data.name },
+        }).catch(() => null);
+        if (mem) data = fillFromMemory(data, mem);
         if (job.itemId) {
           await updateItem({
             data: {
@@ -650,7 +666,7 @@ export function CameraView({
         lastCropRef.current = null;
         return;
       }
-      const w = detect === "ppocr" ? 480 : 320;
+      const w = detect === "ppocr" ? 720 : 320;
       const h = Math.round((video.videoHeight / Math.max(video.videoWidth, 1)) * w) || 180;
       canvas.width = w;
       canvas.height = h;
@@ -681,7 +697,7 @@ export function CameraView({
             if (now - lastPpocr < 900) return;
             lastPpocr = now;
             if (ppocrReady()) {
-              const hit = await runPpocr(canvas, cfg.confidence, { reticle: true });
+              const hit = await runPpocr(canvas, undefined, { reticle: true, feel: cfg.ppocrFeel });
               lastCropRef.current = hit.crop;
               ready = hit.ready;
               if (hit.text) setHint(hit.text.slice(0, 32));

@@ -4,6 +4,21 @@ Tillwise — self-host
 Camera-first grocery ledger. No accounts. Detect on the phone, read in the
 background, collate aisle stickers with the till tape.
 
+
+Docker (GitHub Actions → GHCR)
+------------------------------
+Every push to main builds and publishes:
+
+  ghcr.io/xpsixx/tillwise:latest
+  ghcr.io/xpsixx/tillwise:sha-<commit>
+
+Repo:     https://github.com/xPsIXx/tillwise
+Actions:  https://github.com/xPsIXx/tillwise/actions
+Package:  https://github.com/xPsIXx/tillwise/pkgs/container/tillwise
+
+  docker pull ghcr.io/xpsixx/tillwise:latest
+  docker run --rm -p 8080:8080 ghcr.io/xpsixx/tillwise:latest
+
 Environment (never hard-coded in the app)
 -----------------------------------------
 Copy these into the process environment. Environment wins over the Settings form.

@@ -151,3 +151,30 @@ export type TripDetail = {
   receipts: ReceiptCapture[];
   shots: ScanShot[];
 };
+
+export type ProductMemory = {
+  barcode: string | null;
+  nameKey: string;
+  name: string;
+  brand: string | null;
+  category: string | null;
+  lastUnitPrice: number | null;
+  lastLinePrice: number | null;
+  lastWeightValue: number | null;
+  currency: string | null;
+  seenCount: number;
+  updatedAt: string;
+};
+
+export type PricePoint = {
+  id: number;
+  name: string;
+  barcode: string | null;
+  storeName: string | null;
+  unitPrice: number | null;
+  linePrice: number | null;
+  weightValue: number | null;
+  weightUnit: string | null;
+  currency: string;
+  observedAt: string;
+};

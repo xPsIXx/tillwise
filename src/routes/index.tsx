@@ -107,9 +107,14 @@ function Home() {
       <section className="mt-8">
         <div className="flex items-baseline justify-between">
           <h2 className="font-display text-2xl">Recent</h2>
-          <Link to="/trips" className="text-sm text-muted hover:text-fg">
-            All trips
-          </Link>
+          <div className="flex gap-3">
+            <Link to="/prices" className="text-sm text-muted hover:text-fg">
+              Prices
+            </Link>
+            <Link to="/trips" className="text-sm text-muted hover:text-fg">
+              All trips
+            </Link>
+          </div>
         </div>
         {filed.length === 0 ? (
           <p className="mt-3 text-sm text-muted">

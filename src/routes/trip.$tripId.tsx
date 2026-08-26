@@ -2,6 +2,7 @@ import { useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -222,6 +223,57 @@ function TripPage() {
         >
           {confirmDelete ? "Delete this trip?" : "Delete"}
         </Button>
+        {visible.length > 0 && (
+          <Button
+            type="button"
+            variant="ghost"
+            className="text-muted"
+            onClick={() => {
+              const header = [
+                "name",
+                "brand",
+                "barcode",
+                "quantity",
+                "quantity_unit",
+                "weight",
+                "weight_unit",
+                "unit_price",
+                "line_price",
+                "currency",
+                "match",
+              ];
+              const rows = visible.map((it) =>
+                [
+                  it.name,
+                  it.brand ?? "",
+                  it.barcode ?? "",
+                  it.quantity ?? "",
+                  it.quantityUnit ?? "",
+                  it.weightValue ?? "",
+                  it.weightUnit ?? "",
+                  it.unitPrice ?? "",
+                  it.linePrice ?? "",
+                  it.currency ?? trip.currency,
+                  it.matchStatus,
+                ]
+                  .map((v) => `"${String(v).replaceAll('"', '""')}"`)
+                  .join(","),
+              );
+              const csv = [header.join(","), ...rows].join("\n");
+              const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = `${(trip.storeName ?? "trip").replace(/\s+/g, "-")}-${trip.id}.csv`;
+              a.click();
+              URL.revokeObjectURL(url);
+              toast.success("Exported CSV");
+            }}
+          >
+            <Download className="size-4" />
+            Export CSV
+          </Button>
+        )}
       </div>
 
       {photos.length > 0 && (

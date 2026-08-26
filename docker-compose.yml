@@ -1,0 +1,14 @@
+services:
+  tillwise:
+    image: ghcr.io/xpsixx/tillwise:latest
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      VISION_MODEL: ${VISION_MODEL:-}
+      TEXT_MODEL: ${TEXT_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      DATABASE_URL: ${DATABASE_URL:-}
+    restart: unless-stopped

@@ -4,6 +4,8 @@ import type {
   CollatedItem,
   LabelExtraction,
   LlmProvider,
+  PricePoint,
+  ProductMemory,
   ReceiptCapture,
   ReceiptExtraction,
   ScanShot,
@@ -374,7 +376,9 @@ export const addLabelItem = createServerFn({ method: "POST" })
     `;
     const row = rows[0];
     if (!row) throw new Error("Could not save item");
-    return mapItem(row);
+    const item = mapItem(row);
+    await rememberProduct(sql, item, trip.storeName);
+    return item;
   });
 
 export const updateItem = createServerFn({ method: "POST" })
@@ -450,7 +454,10 @@ export const updateItem = createServerFn({ method: "POST" })
                  currency, raw_text, thumbnail_data, match_status, match_confidence, created_at
     `;
     if (!updated[0]) throw new Error("Item not found");
-    return mapItem(updated[0]);
+    const item = mapItem(updated[0]);
+    const trip = await loadTrip(item.tripId);
+    await rememberProduct(sql, item, trip?.storeName ?? null);
+    return item;
   });
 
 export const deleteItem = createServerFn({ method: "POST" })
@@ -612,6 +619,20 @@ export const collateTrip = createServerFn({ method: "POST" })
       const id = await insertMerged(sql, tripId, item);
       newByName.set(item.name.toLowerCase().trim(), id);
       if (item.barcode) newByBarcode.set(item.barcode, id);
+      await rememberCatalog(sql, {
+        name: item.name,
+        brand: item.brand,
+        barcode: item.barcode,
+        category: item.category,
+        quantityUnit: item.quantityUnit,
+        weightUnit: item.weightUnit,
+        unitPrice: item.unitPrice,
+        linePrice: item.linePrice,
+        weightValue: item.weightValue,
+        currency: item.currency,
+        tripId,
+        storeName: collated.data.storeName ?? trip.storeName,
+      });
     }
 
     const prevById = new Map(previous.map((p) => [p.id, p]));
@@ -852,8 +873,320 @@ export const completeTrip = createServerFn({ method: "POST" })
     `;
     const trip = await loadTrip(tripId);
     if (!trip) throw new Error("Trip not found");
+    const items = await loadItems(tripId);
+    for (const item of items) {
+      await rememberProduct(sql, item, trip.storeName);
+    }
     return trip;
   });
+
+function nameKey(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+type CatalogInput = {
+  name: string;
+  brand: string | null;
+  barcode: string | null;
+  category: string | null;
+  quantityUnit: string | null;
+  weightUnit: string | null;
+  unitPrice: number | null;
+  linePrice: number | null;
+  weightValue: number | null;
+  currency: string | null;
+  tripId: number | null;
+  storeName: string | null;
+};
+
+async function rememberProduct(
+  sql: Awaited<ReturnType<typeof getSql>>,
+  item: TripItem,
+  storeName: string | null,
+) {
+  if (item.matchStatus === "processing") return;
+  await rememberCatalog(sql, {
+    name: item.name,
+    brand: item.brand,
+    barcode: item.barcode,
+    category: item.category,
+    quantityUnit: item.quantityUnit,
+    weightUnit: item.weightUnit,
+    unitPrice: item.unitPrice,
+    linePrice: item.linePrice,
+    weightValue: item.weightValue,
+    currency: item.currency,
+    tripId: item.tripId,
+    storeName,
+  });
+}
+
+async function rememberCatalog(sql: Awaited<ReturnType<typeof getSql>>, input: CatalogInput) {
+  const key = nameKey(input.name);
+  if (!key || key === "reading label" || key.startsWith("couldn")) return;
+  const barcode = input.barcode?.trim() || null;
+  try {
+    if (barcode) {
+      const existing = await sql<{ id: number }>`
+        select id from product_memory where barcode = ${barcode} limit 1
+      `;
+      if (existing[0]) {
+        await sql`
+          update product_memory
+             set name_key = ${key},
+                 name = ${input.name},
+                 brand = coalesce(${input.brand}, brand),
+                 category = coalesce(${input.category}, category),
+                 quantity_unit = coalesce(${input.quantityUnit}, quantity_unit),
+                 weight_unit = coalesce(${input.weightUnit}, weight_unit),
+                 last_unit_price = coalesce(${input.unitPrice}, last_unit_price),
+                 last_line_price = coalesce(${input.linePrice}, last_line_price),
+                 last_weight_value = coalesce(${input.weightValue}, last_weight_value),
+                 currency = coalesce(${input.currency}, currency),
+                 seen_count = seen_count + 1,
+                 updated_at = now()
+           where id = ${existing[0].id}
+        `;
+      } else {
+        await sql`
+          insert into product_memory (
+            barcode, name_key, name, brand, category, quantity_unit, weight_unit,
+            last_unit_price, last_line_price, last_weight_value, currency, seen_count
+          ) values (
+            ${barcode}, ${key}, ${input.name}, ${input.brand}, ${input.category},
+            ${input.quantityUnit}, ${input.weightUnit}, ${input.unitPrice}, ${input.linePrice},
+            ${input.weightValue}, ${input.currency ?? "AED"}, 1
+          )
+        `;
+      }
+    } else {
+      const existing = await sql<{ id: number }>`
+        select id from product_memory where name_key = ${key} and barcode is null limit 1
+      `;
+      if (existing[0]) {
+        await sql`
+          update product_memory
+             set name = ${input.name},
+                 brand = coalesce(${input.brand}, brand),
+                 last_unit_price = coalesce(${input.unitPrice}, last_unit_price),
+                 last_line_price = coalesce(${input.linePrice}, last_line_price),
+                 last_weight_value = coalesce(${input.weightValue}, last_weight_value),
+                 currency = coalesce(${input.currency}, currency),
+                 seen_count = seen_count + 1,
+                 updated_at = now()
+           where id = ${existing[0].id}
+        `;
+      } else {
+        await sql`
+          insert into product_memory (
+            barcode, name_key, name, brand, category, quantity_unit, weight_unit,
+            last_unit_price, last_line_price, last_weight_value, currency, seen_count
+          ) values (
+            null, ${key}, ${input.name}, ${input.brand}, ${input.category},
+            ${input.quantityUnit}, ${input.weightUnit}, ${input.unitPrice}, ${input.linePrice},
+            ${input.weightValue}, ${input.currency ?? "AED"}, 1
+          )
+        `;
+      }
+    }
+    if (input.linePrice != null || input.unitPrice != null) {
+      await sql`
+        insert into price_observations (
+          trip_id, barcode, name_key, name, store_name, unit_price, line_price,
+          weight_value, weight_unit, currency
+        ) values (
+          ${input.tripId}, ${barcode}, ${key}, ${input.name}, ${input.storeName},
+          ${input.unitPrice}, ${input.linePrice}, ${input.weightValue}, ${input.weightUnit},
+          ${input.currency ?? "AED"}
+        )
+      `;
+    }
+  } catch (err) {
+    console.error("[catalog]", err);
+  }
+}
+
+export const lookupProduct = createServerFn({ method: "POST" })
+  .validator((input: { barcode?: string | null; name?: string | null }) => input)
+  .handler(async ({ data }): Promise<ProductMemory | null> => {
+    const sql = await getSql();
+    const barcode = data.barcode?.trim() || null;
+    const key = data.name ? nameKey(data.name) : "";
+    const rows = barcode
+      ? await sql<{
+          barcode: string | null;
+          name_key: string;
+          name: string;
+          brand: string | null;
+          category: string | null;
+          last_unit_price: unknown;
+          last_line_price: unknown;
+          last_weight_value: unknown;
+          currency: string | null;
+          seen_count: unknown;
+          updated_at: unknown;
+        }>`
+        select barcode, name_key, name, brand, category, last_unit_price, last_line_price,
+               last_weight_value, currency, seen_count, updated_at
+          from product_memory
+         where barcode = ${barcode}
+         limit 1
+      `
+      : key
+        ? await sql<{
+            barcode: string | null;
+            name_key: string;
+            name: string;
+            brand: string | null;
+            category: string | null;
+            last_unit_price: unknown;
+            last_line_price: unknown;
+            last_weight_value: unknown;
+            currency: string | null;
+            seen_count: unknown;
+            updated_at: unknown;
+          }>`
+          select barcode, name_key, name, brand, category, last_unit_price, last_line_price,
+                 last_weight_value, currency, seen_count, updated_at
+            from product_memory
+           where name_key = ${key}
+           order by updated_at desc
+           limit 1
+        `
+        : [];
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      barcode: row.barcode,
+      nameKey: row.name_key,
+      name: row.name,
+      brand: row.brand,
+      category: row.category,
+      lastUnitPrice: n(row.last_unit_price),
+      lastLinePrice: n(row.last_line_price),
+      lastWeightValue: n(row.last_weight_value),
+      currency: row.currency,
+      seenCount: n(row.seen_count) ?? 1,
+      updatedAt: iso(row.updated_at),
+    };
+  });
+
+export const listPriceHistory = createServerFn({ method: "POST" })
+  .validator((input: { barcode?: string | null; name?: string | null; limit?: number }) => input)
+  .handler(async ({ data }): Promise<PricePoint[]> => {
+    const sql = await getSql();
+    const barcode = data.barcode?.trim() || null;
+    const key = data.name ? nameKey(data.name) : "";
+    const limit = Math.min(40, Math.max(5, data.limit ?? 16));
+    const rows = barcode
+      ? await sql<{
+          id: number;
+          name: string;
+          barcode: string | null;
+          store_name: string | null;
+          unit_price: unknown;
+          line_price: unknown;
+          weight_value: unknown;
+          weight_unit: string | null;
+          currency: string;
+          observed_at: unknown;
+        }>`
+        select id, name, barcode, store_name, unit_price, line_price, weight_value, weight_unit, currency, observed_at
+          from price_observations
+         where barcode = ${barcode}
+         order by observed_at desc
+         limit ${limit}
+      `
+      : key
+        ? await sql<{
+            id: number;
+            name: string;
+            barcode: string | null;
+            store_name: string | null;
+            unit_price: unknown;
+            line_price: unknown;
+            weight_value: unknown;
+            weight_unit: string | null;
+            currency: string;
+            observed_at: unknown;
+          }>`
+          select id, name, barcode, store_name, unit_price, line_price, weight_value, weight_unit, currency, observed_at
+            from price_observations
+           where name_key = ${key}
+           order by observed_at desc
+           limit ${limit}
+        `
+        : await sql<{
+            id: number;
+            name: string;
+            barcode: string | null;
+            store_name: string | null;
+            unit_price: unknown;
+            line_price: unknown;
+            weight_value: unknown;
+            weight_unit: string | null;
+            currency: string;
+            observed_at: unknown;
+          }>`
+          select id, name, barcode, store_name, unit_price, line_price, weight_value, weight_unit, currency, observed_at
+            from price_observations
+           order by observed_at desc
+           limit ${limit}
+        `;
+    return rows.map((row) => ({
+      id: Number(row.id),
+      name: row.name,
+      barcode: row.barcode,
+      storeName: row.store_name,
+      unitPrice: n(row.unit_price),
+      linePrice: n(row.line_price),
+      weightValue: n(row.weight_value),
+      weightUnit: row.weight_unit,
+      currency: row.currency || "AED",
+      observedAt: iso(row.observed_at),
+    }));
+  });
+
+export const listRememberedProducts = createServerFn({ method: "GET" }).handler(
+  async (): Promise<ProductMemory[]> => {
+    const sql = await getSql();
+    const rows = await sql<{
+      barcode: string | null;
+      name_key: string;
+      name: string;
+      brand: string | null;
+      category: string | null;
+      last_unit_price: unknown;
+      last_line_price: unknown;
+      last_weight_value: unknown;
+      currency: string | null;
+      seen_count: unknown;
+      updated_at: unknown;
+    }>`
+      select barcode, name_key, name, brand, category, last_unit_price, last_line_price,
+             last_weight_value, currency, seen_count, updated_at
+        from product_memory
+       order by updated_at desc
+       limit 80
+    `;
+    return rows.map((row) => ({
+      barcode: row.barcode,
+      nameKey: row.name_key,
+      name: row.name,
+      brand: row.brand,
+      category: row.category,
+      lastUnitPrice: n(row.last_unit_price),
+      lastLinePrice: n(row.last_line_price),
+      lastWeightValue: n(row.last_weight_value),
+      currency: row.currency,
+      seenCount: n(row.seen_count) ?? 1,
+      updatedAt: iso(row.updated_at),
+    }));
+  },
+);
 
 export const getLlmConfig = createServerFn({ method: "GET" }).handler(async () => {
   const { loadLlmConfig } = await import("./llm");

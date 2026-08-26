@@ -49,3 +49,21 @@ Defaults: detect = shape (no download), read = local, collate = local.
 - **PP-OCRv6** — first time you enable it in Settings, the app downloads det + rec from Hugging Face (`PaddlePaddle/PP-OCRv6_small_*_onnx`) through a same-origin proxy, packs `inference.onnx` + `inference.yml` into ustar tars, and caches them on the phone (~30 MB). The engine JS + ORT wasm are vendored same-origin (`npm run build:ppocr`, also on `npm install`). Optional: drop pre-packed tars in `public/models/` to skip the Hugging Face step.
 
 See `HOSTING.txt` for the short self-host cheat sheet.
+
+
+## Docker
+
+GitHub Actions on `main` publishes `ghcr.io/xpsixx/tillwise:latest`.
+
+```bash
+docker pull ghcr.io/xpsixx/tillwise:latest
+docker run --rm -p 8080:8080 \
+  -e LLM_BASE_URL=http://192.168.1.2:8088 \
+  -e VISION_MODEL=Qwen3-VL-8B \
+  -e TEXT_MODEL=Qwen3.5-9B \
+  ghcr.io/xpsixx/tillwise:latest
+```
+
+- Repo: https://github.com/xPsIXx/tillwise
+- Actions: https://github.com/xPsIXx/tillwise/actions
+- Image: https://github.com/xPsIXx/tillwise/pkgs/container/tillwise

@@ -1,3 +1,5 @@
+import { parseLabelText } from "./parse-local";
+import { loadScanSettings, ppocrParams, type PpocrFeel } from "./settings";
 import type { LabelExtraction } from "./types";
 import type { EngineProgress } from "./tfjs";
 
@@ -28,16 +30,18 @@ type Kind = keyof typeof HF;
 
 type OcrItem = {
   text?: string;
+  rec_text?: string;
   score?: number;
   rec_score?: number;
   det_score?: number;
   box?: number[] | number[][];
+  poly?: number[] | number[][];
 };
 
 type OcrResult = { items?: OcrItem[] } | { items?: OcrItem[] }[];
 
 type PaddleInstance = {
-  predict: (input: Blob | HTMLCanvasElement) => Promise<OcrResult>;
+  predict: (input: Blob | HTMLCanvasElement, params?: Record<string, unknown>) => Promise<OcrResult>;
 };
 
 type PaddleCtor = {
@@ -379,11 +383,39 @@ async function compilePpocr(): Promise<boolean> {
   }
 }
 
+function itemText(it: OcrItem): string {
+  return (it.text || it.rec_text || "").trim();
+}
+
+function itemScore(it: OcrItem): number {
+  return it.score || it.rec_score || it.det_score || 0;
+}
+
+function flattenItems(raw: unknown): OcrItem[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) {
+    if (raw.length === 0) return [];
+    const first = raw[0] as Record<string, unknown> | undefined;
+    if (first && Array.isArray(first.items)) return flattenItems(first.items);
+    if (first && (typeof first.text === "string" || typeof first.rec_text === "string")) {
+      return raw as OcrItem[];
+    }
+    return raw.flatMap((x) => flattenItems(x));
+  }
+  if (typeof raw === "object") {
+    const obj = raw as Record<string, unknown>;
+    if (Array.isArray(obj.items)) return flattenItems(obj.items);
+    if (typeof obj.text === "string" || typeof obj.rec_text === "string") return [obj as OcrItem];
+  }
+  return [];
+}
+
 function normalizeBox(
-  box: OcrItem["box"],
+  item: OcrItem,
   w: number,
   h: number,
 ): [number, number, number, number] | null {
+  const box = item.poly ?? item.box;
   if (!box) return null;
   const pts = Array.isArray(box[0]) ? (box as number[][]) : null;
   let minX = 1;
@@ -404,8 +436,12 @@ function normalizeBox(
     if (b.length < 4) return null;
     minX = b[0] > 1.5 ? b[0] / w : b[0];
     minY = b[1] > 1.5 ? b[1] / h : b[1];
-    maxX = b[0] + b[2] > 1.5 ? (b[0] + b[2]) / w : b[0] + b[2];
-    maxY = b[1] + b[3] > 1.5 ? (b[1] + b[3]) / h : b[1] + b[3];
+    maxX = b[2] > 1.5 ? b[2] / w : b.length >= 4 && b[2] < 2 ? b[0] + b[2] : b[2] / w;
+    maxY = b[3] > 1.5 ? b[3] / h : b.length >= 4 && b[3] < 2 ? b[1] + b[3] : b[3] / h;
+    if (b[2] < 2 && b[3] < 2 && b[0] + b[2] <= 1.5) {
+      maxX = b[0] + b[2];
+      maxY = b[1] + b[3];
+    }
   }
   if (minX > maxX || minY > maxY) return null;
   return [minX, minY, maxX - minX, maxY - minY];
@@ -413,93 +449,84 @@ function normalizeBox(
 
 export async function runPpocr(
   canvas: HTMLCanvasElement,
-  threshold: number,
-  opts?: { reticle?: boolean },
+  threshold?: number,
+  opts?: { reticle?: boolean; feel?: PpocrFeel },
 ): Promise<PpocrHit> {
   const engine = ppocrStore().instance;
   if (!engine) {
     return { ready: false, score: 0, text: "", crop: null };
   }
-  const blob = await new Promise<Blob | null>((res) =>
-    canvas.toBlob((b) => res(b), "image/jpeg", 0.85),
-  );
-  if (!blob) return { ready: false, score: 0, text: "", crop: null };
+  const feel = opts?.feel ?? loadScanSettings().ppocrFeel;
+  const params = ppocrParams(feel);
+  const lockAt = threshold ?? params.minScore;
+  const predictOpts = {
+    textRecScoreThresh: params.recThresh,
+    text_rec_score_thresh: params.recThresh,
+    textDetThresh: params.detThresh,
+    text_det_thresh: params.detThresh,
+    textDetBoxThresh: params.boxThresh,
+    text_det_box_thresh: params.boxThresh,
+  };
   let ocrRes: OcrResult;
   try {
-    ocrRes = await engine.predict(blob);
+    ocrRes = await engine.predict(canvas, predictOpts);
   } catch {
-    return { ready: false, score: 0, text: "", crop: null };
+    const blob = await new Promise<Blob | null>((res) =>
+      canvas.toBlob((b) => res(b), "image/jpeg", 0.92),
+    );
+    if (!blob) return { ready: false, score: 0, text: "", crop: null };
+    try {
+      ocrRes = await engine.predict(blob, predictOpts);
+    } catch {
+      return { ready: false, score: 0, text: "", crop: null };
+    }
   }
-  const first = Array.isArray(ocrRes) ? ocrRes[0] : ocrRes;
-  const items = first && Array.isArray(first.items) ? first.items : [];
-  const w = canvas.width;
-  const h = canvas.height;
-  const useReticle = opts?.reticle !== false;
-  const rx0 = 0.3;
-  const ry0 = 0.3;
-  const rx1 = 0.7;
-  const ry1 = 0.7;
-  const labelLike = items.filter((it) => {
-    const b = normalizeBox(it.box, w, h);
-    if (!b) return false;
+  const items = flattenItems(ocrRes);
+  const w = canvas.width || 1;
+  const h = canvas.height || 1;
+  const useReticle = opts?.reticle === true;
+  const pad = params.reticle;
+  const rx0 = pad;
+  const ry0 = pad;
+  const rx1 = 1 - pad;
+  const ry1 = 1 - pad;
+  const kept = items.filter((it) => {
+    const text = itemText(it);
+    if (text.length < params.minLen) return false;
+    if (!/[A-Za-z0-9\u0600-\u06FF]/.test(text)) return false;
+    if (!useReticle) return true;
+    const b = normalizeBox(it, w, h);
+    if (!b) return true;
     const cx = b[0] + b[2] / 2;
     const cy = b[1] + b[3] / 2;
-    if (useReticle && !(cx > rx0 && cx < rx1 && cy > ry0 && cy < ry1)) return false;
-    const text = it.text || "";
-    if (text.length < 2) return false;
-    if (!/[A-Za-z0-9]/.test(text)) return false;
-    if (b[2] > 0 && b[3] / b[2] > 1.6) return false;
-    return true;
+    return cx > rx0 && cx < rx1 && cy > ry0 && cy < ry1;
   });
-  if (!labelLike.length) return { ready: false, score: 0, text: "", crop: null };
-  labelLike.sort(
-    (a, b) => (b.score || b.rec_score || 0) - (a.score || a.rec_score || 0),
-  );
-  const best = labelLike[0];
-  const score = best.score || best.rec_score || 0;
-  const text = labelLike
-    .map((it) => (it.text || "").trim())
-    .filter(Boolean)
-    .join(" ");
+  if (!kept.length) return { ready: false, score: 0, text: "", crop: null };
+  kept.sort((a, b) => {
+    const ba = normalizeBox(a, w, h);
+    const bb = normalizeBox(b, w, h);
+    const ya = ba ? ba[1] : 0;
+    const yb = bb ? bb[1] : 0;
+    if (Math.abs(ya - yb) > 0.04) return ya - yb;
+    return (ba ? ba[0] : 0) - (bb ? bb[0] : 0);
+  });
+  const best = [...kept].sort((a, b) => itemScore(b) - itemScore(a))[0];
+  const score = itemScore(best);
+  const text = kept.map(itemText).filter(Boolean).join("\n");
   let crop: PpocrHit["crop"] = null;
-  const bb = normalizeBox(best.box, w, h);
+  const bb = normalizeBox(best, w, h);
   if (bb) {
-    const pad = 0.08;
+    const extra = 0.1;
     crop = {
-      x0: Math.max(0, bb[0] - pad),
-      y0: Math.max(0, bb[1] - pad),
-      x1: Math.min(1, bb[0] + bb[2] + pad),
-      y1: Math.min(1, bb[1] + bb[3] + pad),
+      x0: Math.max(0, bb[0] - extra),
+      y0: Math.max(0, bb[1] - extra),
+      x1: Math.min(1, bb[0] + bb[2] + extra),
+      y1: Math.min(1, bb[1] + bb[3] + extra),
     };
   }
-  return { ready: score >= threshold, score, text, crop };
+  return { ready: score >= lockAt || (useReticle && text.length >= 6), score, text, crop };
 }
 
 export function parsePpocrText(text: string, barcode: string | null): LabelExtraction {
-  const price =
-    text.match(/(?:AED|Dhs?|DH)\s*(\d{1,3}(?:[.,]\d{2}))/i) ??
-    text.match(/(\d{1,3}(?:[.,]\d{2}))\s*(?:AED|Dhs?)/i);
-  const weight = text.match(/(\d+(?:[.,]\d+)?)\s*(kg|g|ml|l|lb|oz)\b/i);
-  const cleaned = text
-    .replace(/(?:AED|Dhs?|DH)\s*\d{1,3}(?:[.,]\d{2})?/gi, " ")
-    .replace(/\d{1,3}(?:[.,]\d{2})\s*(?:AED|Dhs?)?/gi, " ")
-    .replace(/\d+(?:[.,]\d+)?\s*(kg|l|ml|g|lb|oz)\b/gi, " ")
-    .replace(/\s{2,}/g, " ")
-    .trim();
-  return {
-    name: (cleaned || barcode || "Unknown item").slice(0, 80),
-    brand: null,
-    description: null,
-    barcode,
-    category: null,
-    quantity: 1,
-    quantityUnit: "ea",
-    weightValue: weight ? Number(weight[1].replace(",", ".")) : null,
-    weightUnit: weight ? weight[2].toLowerCase() : null,
-    unitPrice: null,
-    linePrice: price ? Number(price[1].replace(",", ".")) : null,
-    currency: price ? "AED" : null,
-    origin: null,
-    rawText: text,
-  };
+  return parseLabelText(text, barcode);
 }

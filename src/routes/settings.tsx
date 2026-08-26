@@ -9,6 +9,7 @@ import { loadPpocr, ppocrReady } from "@/lib/grocery/ppocr";
 import {
   COLLATE_OPTIONS,
   DETECT_OPTIONS,
+  PPOCR_FEEL,
   READ_OPTIONS,
   loadScanSettings,
   saveScanSettings,
@@ -43,6 +44,12 @@ function SettingsPage() {
     setUrl(cfg.localUrl ?? "");
     setVision(cfg.visionModel ?? "");
     setText(cfg.textModel ?? "");
+    if (settings.read === "local" && !cfg.localAvailable) {
+      patch({ read: "ppocr" });
+    } else if (settings.read === "grok" && !cfg.grokAvailable) {
+      patch({ read: "ppocr" });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cfg]);
 
   useEffect(() => {
@@ -184,20 +191,42 @@ function SettingsPage() {
             checked={settings.autoCapture}
             onChange={(autoCapture) => patch({ autoCapture })}
           />
-          <label className="mt-4 block">
-            <span className="text-sm font-medium">Lock threshold</span>
-            <span className="mt-0.5 block text-xs text-muted">
-              Higher = pickier. Current {Math.round(settings.confidence * 100)}%.
-            </span>
-            <input
-              type="range"
-              min={20}
-              max={85}
-              value={Math.round(settings.confidence * 100)}
-              onChange={(e) => patch({ confidence: Number(e.target.value) / 100 })}
-              className="mt-3 w-full accent-accent"
-            />
-          </label>
+          {settings.detect !== "ppocr" && (
+            <label className="mt-4 block">
+              <span className="text-sm font-medium">Lock threshold</span>
+              <span className="mt-0.5 block text-xs text-muted">
+                Higher = pickier. Current {Math.round(settings.confidence * 100)}%.
+              </span>
+              <input
+                type="range"
+                min={10}
+                max={85}
+                value={Math.round(settings.confidence * 100)}
+                onChange={(e) => patch({ confidence: Number(e.target.value) / 100 })}
+                className="mt-3 w-full accent-accent"
+              />
+            </label>
+          )}
+        </section>
+      )}
+
+      {(settings.detect === "ppocr" || settings.read === "ppocr") && (
+        <section className="mt-8">
+          <h2 className="font-display text-2xl">PP-OCR sensitivity</h2>
+          <p className="mt-1 text-sm text-muted">
+            Loose keeps small produce-sticker text. Strict only locks on sharp type in the aim box.
+          </p>
+          <div className="mt-4 grid gap-2">
+            {PPOCR_FEEL.map((opt) => (
+              <Choice
+                key={opt.id}
+                title={opt.title}
+                body={opt.body}
+                selected={settings.ppocrFeel === opt.id}
+                onSelect={() => patch({ ppocrFeel: opt.id })}
+              />
+            ))}
+          </div>
         </section>
       )}
 

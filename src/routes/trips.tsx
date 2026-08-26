@@ -29,9 +29,14 @@ function TripsPage() {
         <section className="mt-6">
           <div className="flex items-end justify-between gap-3">
             <h2 className="font-display text-xl">Recent shots</h2>
-            <Link to="/shots" className="text-xs text-muted hover:text-fg">
-              All photos
-            </Link>
+            <div className="flex gap-3">
+              <Link to="/prices" className="text-xs text-muted hover:text-fg">
+                Prices
+              </Link>
+              <Link to="/shots" className="text-xs text-muted hover:text-fg">
+                All photos
+              </Link>
+            </div>
           </div>
           <ul className="mt-3 flex gap-2 overflow-x-auto pb-1">
             {shots.map((shot) => (

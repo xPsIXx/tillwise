@@ -223,7 +223,7 @@ export default defineConfig(({ command, isPreview }) => ({
     ...(command === "build" || isPreview
       ? [
           nitro({
-            preset: "vercel",
+            preset: process.env.NITRO_PRESET || "vercel",
             serverDir: "./server",
           }),
         ]

@@ -3,6 +3,7 @@ import type { LlmProvider } from "./types";
 export type DetectMode = "tensorflow" | "ppocr" | "shape" | "barcode" | "off";
 export type ReadMode = "local" | "ppocr" | "grok" | "device";
 export type VisionDetail = "low" | "high";
+export type PpocrFeel = "loose" | "normal" | "strict";
 
 export type ScanSettings = {
   detect: DetectMode;
@@ -12,6 +13,7 @@ export type ScanSettings = {
   autoAdd: boolean;
   confidence: number;
   visionDetail: VisionDetail;
+  ppocrFeel: PpocrFeel;
 };
 
 export const DETECT_OPTIONS: { id: DetectMode; title: string; body: string }[] = [
@@ -82,17 +84,67 @@ const KEY = "tillwise.scan-settings";
 
 const DEFAULTS: ScanSettings = {
   detect: "shape",
-  read: "local",
+  read: "ppocr",
   collate: "local",
   autoCapture: true,
   autoAdd: true,
-  confidence: 0.42,
+  confidence: 0.28,
   visionDetail: "high",
+  ppocrFeel: "loose",
 };
+
+export const PPOCR_FEEL: { id: PpocrFeel; title: string; body: string }[] = [
+  {
+    id: "loose",
+    title: "Loose",
+    body: "Accept faint or small sticker text. Best for produce scales and far-away labels.",
+  },
+  {
+    id: "normal",
+    title: "Normal",
+    body: "Ignore junk in the margins. Default if Loose picks up shelf talkers.",
+  },
+  {
+    id: "strict",
+    title: "Strict",
+    body: "Only lock on sharp text in the aim box. Use when the aisle is busy.",
+  },
+];
+
+export function ppocrParams(feel: PpocrFeel) {
+  if (feel === "strict") {
+    return {
+      recThresh: 0.45,
+      detThresh: 0.35,
+      boxThresh: 0.55,
+      reticle: 0.28,
+      minScore: 0.42,
+      minLen: 2,
+    };
+  }
+  if (feel === "normal") {
+    return {
+      recThresh: 0.28,
+      detThresh: 0.25,
+      boxThresh: 0.45,
+      reticle: 0.18,
+      minScore: 0.28,
+      minLen: 2,
+    };
+  }
+  return {
+    recThresh: 0.12,
+    detThresh: 0.18,
+    boxThresh: 0.35,
+    reticle: 0.08,
+    minScore: 0.15,
+    minLen: 1,
+  };
+}
 
 function clampConfidence(n: number): number {
   if (!Number.isFinite(n)) return DEFAULTS.confidence;
-  return Math.min(0.85, Math.max(0.2, n));
+  return Math.min(0.85, Math.max(0.1, n));
 }
 
 const DETECTS: DetectMode[] = ["tensorflow", "ppocr", "shape", "barcode", "off"];
@@ -103,17 +155,28 @@ export function loadScanSettings(): ScanSettings {
   try {
     const raw = window.localStorage.getItem(KEY);
     if (!raw) return DEFAULTS;
-    const parsed = JSON.parse(raw) as Partial<ScanSettings>;
+    const parsed = JSON.parse(raw) as Partial<ScanSettings> & { v?: number };
+    const version = Number(parsed.v ?? 0);
+    const feel: PpocrFeel =
+      parsed.ppocrFeel === "normal" || parsed.ppocrFeel === "strict" || parsed.ppocrFeel === "loose"
+        ? parsed.ppocrFeel
+        : DEFAULTS.ppocrFeel;
+    let read: ReadMode = READS.includes(parsed.read as ReadMode)
+      ? (parsed.read as ReadMode)
+      : DEFAULTS.read;
+    // v1 defaulted to local vision. With no model that path is dead — prefer PP-OCR.
+    if (version < 2 && read === "local") read = "ppocr";
     return {
       detect: DETECTS.includes(parsed.detect as DetectMode)
         ? (parsed.detect as DetectMode)
         : DEFAULTS.detect,
-      read: READS.includes(parsed.read as ReadMode) ? (parsed.read as ReadMode) : DEFAULTS.read,
+      read,
       collate: parsed.collate === "grok" ? "grok" : "local",
       autoCapture: parsed.autoCapture ?? DEFAULTS.autoCapture,
       autoAdd: parsed.autoAdd ?? DEFAULTS.autoAdd,
-      confidence: clampConfidence(Number(parsed.confidence)),
+      confidence: clampConfidence(Number(parsed.confidence ?? DEFAULTS.confidence)),
       visionDetail: parsed.visionDetail === "low" ? "low" : "high",
+      ppocrFeel: feel,
     };
   } catch {
     return DEFAULTS;
@@ -122,7 +185,16 @@ export function loadScanSettings(): ScanSettings {
 
 export function saveScanSettings(next: ScanSettings) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(KEY, JSON.stringify(next));
+  window.localStorage.setItem(KEY, JSON.stringify({ ...next, v: 2 }));
+}
+
+export function effectiveRead(
+  cfg: ScanSettings,
+  llm?: { localAvailable: boolean; grokAvailable: boolean },
+): ReadMode {
+  if (cfg.read === "local" && llm && !llm.localAvailable) return "ppocr";
+  if (cfg.read === "grok" && llm && !llm.grokAvailable) return "ppocr";
+  return cfg.read;
 }
 
 /** LLM used for label/receipt photos that need a vision model. */
