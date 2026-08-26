@@ -39,6 +39,37 @@ export function pgliteDataDir(): string | undefined {
   return resolve(process.cwd(), "data", "pglite");
 }
 
+function ensureDir(path: string): boolean {
+  try {
+    mkdirSync(path, { recursive: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Create the data folder, or a writable fallback if the volume is root-owned. */
+export function resolveWritablePgliteDir(): string | undefined {
+  const preferred = pgliteDataDir();
+  if (!preferred) return undefined;
+  if (ensureDir(preferred)) return preferred;
+  const fallbacks = [
+    resolve("/tmp/tillwise-pglite"),
+    resolve(process.cwd(), "data", "pglite"),
+  ];
+  for (const next of fallbacks) {
+    if (next === preferred) continue;
+    if (ensureDir(next)) {
+      console.warn(
+        `[db] ${preferred} is not writable; using ${next}. Mount /data owned by uid 1000 to persist trips.`,
+      );
+      return next;
+    }
+  }
+  console.error(`[db] No writable PGLite folder (tried ${preferred}).`);
+  return undefined;
+}
+
 /**
  * Minimal shared SQL surface, satisfied by both Neon and PGLite. Both the
  * tagged-template and `.query()` forms resolve to an array of row objects:
@@ -132,8 +163,7 @@ async function createPgliteSql(): Promise<Sql> {
   // (Docker volume / ./data/pglite) so trips survive restarts.
   globalRef.__pgliteInstance__ ??= (async () => {
     const { PGlite } = await import("@electric-sql/pglite");
-    const dataDir = pgliteDataDir();
-    if (dataDir) mkdirSync(dataDir, { recursive: true });
+    const dataDir = resolveWritablePgliteDir();
     console.info("[db] PGLite", dataDir ? `on disk at ${dataDir}` : "in memory");
     const parsers = {
       [OID_INT8]: Number,

@@ -18,6 +18,7 @@ services:
     volumes:
       - tillwise-data:/data
     restart: unless-stopped
+    # Entrypoint starts as root, chowns /data, then runs the app as node.
 
 volumes:
   tillwise-data:

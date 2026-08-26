@@ -28,17 +28,20 @@ ENV NODE_ENV=production \
     NITRO_HOST=0.0.0.0 \
     PGLITE_DATA_DIR=/data/pglite
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends curl ca-certificates \
+  && apt-get install -y --no-install-recommends curl ca-certificates gosu \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /data/pglite \
-  && chown -R node:node /data
-COPY --from=build /app/.output ./.output
-COPY --from=build /app/migrations ./migrations
-COPY --from=build /app/package.json ./package.json
-COPY --from=deps /app/node_modules ./node_modules
+  && chown -R node:node /data /app
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+COPY --from=build --chown=node:node /app/.output ./.output
+COPY --from=build --chown=node:node /app/migrations ./migrations
+COPY --from=build --chown=node:node /app/package.json ./package.json
+COPY --from=deps --chown=node:node /app/node_modules ./node_modules
 VOLUME ["/data"]
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD curl -sf http://127.0.0.1:8080/ >/dev/null || exit 1
-USER node
+# Start as root so the entrypoint can chown a host-mounted /data, then gosu node.
+ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node", ".output/server/index.mjs"]

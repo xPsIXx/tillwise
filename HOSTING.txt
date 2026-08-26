@@ -28,6 +28,10 @@ The image ships an embedded Postgres (PGLite) and writes it to /data/pglite
 inside the container. Mount a volume on /data or trips vanish when the
 container is removed. Compose already does this as `tillwise-data`.
 
+The app runs as `node` (uid 1000). The image entrypoint starts as root only
+long enough to chown /data, then drops privileges. An existing volume created
+as root is fixed on the next start.
+
 Environment (never hard-coded in the app)
 -----------------------------------------
 Copy these into the process environment. Environment wins over the Settings form.
