@@ -91,9 +91,9 @@ Listens on 0.0.0.0:8080. Open it from your phone on the same network.
 Settings order (detect → read → collate)
 ----------------------------------------
   Detect:  TensorFlow.js → PP-OCRv6 → shape+barcode → barcode → manual
-  Read:    local vision LLM → PP-OCRv6 on-device → Grok → browser text
-  Collate: local TEXT_MODEL → Grok
+  Read:    local vision LLM → PP-OCRv6 on-device → BYOK → browser text
+  Collate: local TEXT_MODEL → BYOK
 
-Receipts always use a vision LLM (local or Grok). PP-OCR is a label engine.
+Receipts always use a vision LLM (local or BYOK). PP-OCR is a label engine.
 
 Defaults: detect = shape (no download), read = local, collate = local.
