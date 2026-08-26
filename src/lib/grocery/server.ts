@@ -1204,6 +1204,10 @@ export const saveLlmConfig = createServerFn({ method: "POST" })
       visionModel?: string | null;
       textModel?: string | null;
       apiKey?: string | null;
+      byokUrl?: string | null;
+      byokVisionModel?: string | null;
+      byokTextModel?: string | null;
+      byokApiKey?: string | null;
     }) => input,
   )
   .handler(async ({ data }) => {

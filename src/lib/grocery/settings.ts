@@ -1,7 +1,7 @@
 import type { LlmProvider } from "./types";
 
 export type DetectMode = "tensorflow" | "ppocr" | "shape" | "barcode" | "off";
-export type ReadMode = "local" | "ppocr" | "grok" | "device";
+export type ReadMode = "local" | "ppocr" | "byok" | "grok" | "device";
 export type VisionDetail = "low" | "high";
 export type PpocrFeel = "loose" | "normal" | "strict";
 export type PpocrSize = "tiny" | "small" | "medium";
@@ -78,9 +78,9 @@ export const READ_OPTIONS: { id: ReadMode; title: string; body: string }[] = [
     body: "On this phone after a Hugging Face download. Reads in the background when “Add to cart, fill in later” is on. Weak on till tape — receipts still use a vision LLM.",
   },
   {
-    id: "grok",
-    title: "Grok vision",
-    body: "Off-device grok-4.5 via xAI. Same as local vision: files the photo immediately and fills fields in the background — no confirm sheet.",
+    id: "byok",
+    title: "BYOK vision",
+    body: "Your cloud or remote API. Paste an OpenAI-compatible endpoint, vision model, and API key below. Snaps file immediately and read in the background — no confirm sheet.",
   },
   {
     id: "device",
@@ -96,9 +96,9 @@ export const COLLATE_OPTIONS: { id: LlmProvider; title: string; body: string }[]
     body: "Your server. TEXT_MODEL groups aisle names with till abbreviations (TOM VINE → tomatoes on the vine).",
   },
   {
-    id: "grok",
-    title: "Grok",
-    body: "Off-device grok-4.5. Use when the local text model is down.",
+    id: "byok",
+    title: "BYOK text",
+    body: "Same remote API as vision, using the text model you set. Use when you do not have a local collate model.",
   },
 ];
 
@@ -173,7 +173,7 @@ function clampConfidence(n: number): number {
 }
 
 const DETECTS: DetectMode[] = ["tensorflow", "ppocr", "shape", "barcode", "off"];
-const READS: ReadMode[] = ["local", "ppocr", "grok", "device"];
+const READS: ReadMode[] = ["local", "ppocr", "byok", "grok", "device"];
 const SIZES: PpocrSize[] = ["tiny", "small", "medium"];
 
 function asSize(v: unknown, fallback: PpocrSize): PpocrSize {
@@ -194,6 +194,7 @@ export function loadScanSettings(): ScanSettings {
     let read: ReadMode = READS.includes(parsed.read as ReadMode)
       ? (parsed.read as ReadMode)
       : DEFAULTS.read;
+    if (read === "grok") read = "byok";
     // v1 defaulted to local vision. With no model that path is dead — prefer PP-OCR.
     if (version < 2 && read === "local") read = "ppocr";
     return {
@@ -204,7 +205,7 @@ export function loadScanSettings(): ScanSettings {
             ? (parsed.detect as DetectMode)
             : DEFAULTS.detect,
       read,
-      collate: parsed.collate === "grok" ? "grok" : "local",
+      collate: parsed.collate === "byok" || parsed.collate === "grok" ? "byok" : "local",
       autoCapture: version < 4 ? false : Boolean(parsed.autoCapture),
       autoAdd: parsed.autoAdd ?? DEFAULTS.autoAdd,
       debugSamples: Boolean(parsed.debugSamples),
@@ -227,22 +228,28 @@ export function saveScanSettings(next: ScanSettings) {
 /** Vision LLMs skip the confirm sheet — they file and read in the background. */
 export function holdForLook(cfg: ScanSettings): boolean {
   if (cfg.autoAdd) return false;
-  if (cfg.read === "local" || cfg.read === "grok") return false;
+  if (cfg.read === "local" || cfg.read === "byok" || cfg.read === "grok") return false;
   return true;
 }
 
 export function effectiveRead(
   cfg: ScanSettings,
-  llm?: { localAvailable: boolean; grokAvailable: boolean },
+  llm?: { localAvailable: boolean; byokAvailable?: boolean; grokAvailable?: boolean },
 ): ReadMode {
   if (cfg.read === "local" && llm && !llm.localAvailable) return "ppocr";
-  if (cfg.read === "grok" && llm && !llm.grokAvailable) return "ppocr";
-  return cfg.read;
+  if (
+    (cfg.read === "byok" || cfg.read === "grok") &&
+    llm &&
+    !(llm.byokAvailable ?? llm.grokAvailable)
+  ) {
+    return "ppocr";
+  }
+  return cfg.read === "grok" ? "byok" : cfg.read;
 }
 
 /** LLM used for label/receipt photos that need a vision model. */
 export function visionProvider(cfg: ScanSettings): LlmProvider {
-  if (cfg.read === "grok") return "grok";
+  if (cfg.read === "byok" || cfg.read === "grok") return "byok";
   if (cfg.read === "local") return "local";
-  return cfg.collate;
+  return cfg.collate === "grok" ? "byok" : cfg.collate;
 }

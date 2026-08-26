@@ -30,6 +30,10 @@ function SettingsPage() {
   const [vision, setVision] = useState("");
   const [text, setText] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [byokUrl, setByokUrl] = useState("");
+  const [byokVision, setByokVision] = useState("");
+  const [byokText, setByokText] = useState("");
+  const [byokKey, setByokKey] = useState("");
   const [engine, setEngine] = useState<EngineProgress | null>(null);
   const textOk = useMemo(() => deviceTextAvailable(), []);
 
@@ -38,16 +42,23 @@ function SettingsPage() {
     queryFn: () => getLlmConfig(),
   });
   const cfg = cfgQuery.data;
-  const envLocked = cfg?.source === "env";
+  const localLocked = Boolean(cfg?.localLocked);
+  const byokLocked = Boolean(cfg?.byokLocked);
 
   useEffect(() => {
     if (!cfg) return;
     setUrl(cfg.localUrl ?? "");
     setVision(cfg.visionModel ?? "");
     setText(cfg.textModel ?? "");
+    setByokUrl(cfg.byokUrl ?? "");
+    setByokVision(cfg.byokVisionModel ?? "");
+    setByokText(cfg.byokTextModel ?? "");
     if (settings.read === "local" && !cfg.localAvailable) {
       patch({ read: "ppocr" });
-    } else if (settings.read === "grok" && !cfg.grokAvailable) {
+    } else if (
+      (settings.read === "byok" || settings.read === "grok") &&
+      !cfg.byokAvailable
+    ) {
       patch({ read: "ppocr" });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -108,26 +119,36 @@ function SettingsPage() {
           visionModel: vision,
           textModel: text,
           apiKey: apiKey.trim() ? apiKey : undefined,
+          byokUrl,
+          byokVisionModel: byokVision,
+          byokTextModel: byokText,
+          byokApiKey: byokKey.trim() ? byokKey : undefined,
         },
       }),
     onSuccess: (next) => {
-      toast.success("Local model saved");
+      toast.success("Endpoints saved");
       setApiKey("");
+      setByokKey("");
       void qc.setQueryData(["llm-config"], next);
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not save"),
   });
 
   const showLlmForm = settings.read === "local" || settings.collate === "local";
-  const showGrokDetail = settings.read === "grok" || settings.collate === "grok";
+  const showByokForm =
+    settings.read === "byok" ||
+    settings.read === "grok" ||
+    settings.collate === "byok" ||
+    settings.collate === "grok";
+  const showVisionDetail = showLlmForm || showByokForm;
 
   return (
     <main className="pb-10 pt-6">
       <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted">Scanner</p>
       <h1 className="mt-2 font-display text-4xl tracking-tight">Settings</h1>
       <p className="mt-3 max-w-lg text-sm text-muted">
-        Detect on the phone, then snap. Reading and collation use the engine you pick — your
-        local models first, Grok last.
+        Detect on the phone, then snap. Reading and collation use the engine you pick — on-device,
+        your local server, or a BYOK API.
       </p>
 
       {engine && (
@@ -268,7 +289,7 @@ function SettingsPage() {
       <section className="mt-10">
         <h2 className="font-display text-2xl">How to read it</h2>
         <p className="mt-1 text-sm text-muted">
-          Labels use this reader. Till tape always needs a vision LLM (local or Grok) — PP-OCR
+          Labels use this reader. Till tape always needs a vision LLM (local or BYOK) — PP-OCR
           is a label engine, not a receipt layout model.
         </p>
         <div className="mt-4 grid gap-2">
@@ -281,8 +302,8 @@ function SettingsPage() {
                   ? `${opt.body} This browser has no Text Detector — barcode + regex only.`
                   : opt.id === "local" && cfg && !cfg.localAvailable
                     ? `${opt.body} Not configured yet — set LLM_BASE_URL and VISION_MODEL below.`
-                    : opt.id === "grok" && cfg && !cfg.grokAvailable
-                      ? `${opt.body} XAI_API_KEY is not set on this server.`
+                    : opt.id === "byok" && cfg && !cfg.byokAvailable
+                      ? `${opt.body} Add an endpoint, vision model, and API key below.`
                       : opt.body
               }
               selected={settings.read === opt.id}
@@ -318,15 +339,15 @@ function SettingsPage() {
         <section className="mt-10">
           <h2 className="font-display text-2xl">Local models</h2>
           <p className="mt-1 text-sm text-muted">
-            {envLocked
+            {localLocked
               ? "Set on the server as environment variables — they win over this form."
-              : "Saved here if the environment is empty. Same names as yesterday: LLM_BASE_URL, VISION_MODEL, TEXT_MODEL."}
+              : "Your machine or LAN. OpenAI-compatible /v1/chat/completions. Saved in this app if the environment is empty."}
           </p>
           <form
             className="mt-4 grid gap-3"
             onSubmit={(e) => {
               e.preventDefault();
-              if (!envLocked) save.mutate();
+              if (!localLocked || !byokLocked) save.mutate();
             }}
           >
             <label className="block text-xs font-medium text-muted">
@@ -334,7 +355,7 @@ function SettingsPage() {
               <Input
                 className="mt-1"
                 value={url}
-                disabled={envLocked}
+                disabled={localLocked}
                 placeholder="http://192.168.1.2:8088"
                 onChange={(e) => setUrl(e.target.value)}
                 autoComplete="off"
@@ -345,7 +366,7 @@ function SettingsPage() {
               <Input
                 className="mt-1"
                 value={vision}
-                disabled={envLocked}
+                disabled={localLocked}
                 placeholder="Qwen3-VL-8B"
                 onChange={(e) => setVision(e.target.value)}
                 autoComplete="off"
@@ -356,15 +377,15 @@ function SettingsPage() {
               <Input
                 className="mt-1"
                 value={text}
-                disabled={envLocked}
+                disabled={localLocked}
                 placeholder="Qwen3.5-9B"
                 onChange={(e) => setText(e.target.value)}
                 autoComplete="off"
               />
             </label>
-            {!envLocked && (
+            {!localLocked && (
               <label className="block text-xs font-medium text-muted">
-                LLM_API_KEY {cfg?.hasLocalKey ? "(saved)" : "(optional)"}
+                API key {cfg?.hasLocalKey ? "(saved)" : "(optional)"}
                 <Input
                   className="mt-1"
                   type="password"
@@ -375,7 +396,7 @@ function SettingsPage() {
                 />
               </label>
             )}
-            {!envLocked && (
+            {!localLocked && (
               <Button type="submit" disabled={save.isPending}>
                 {save.isPending ? "Saving…" : "Save local models"}
               </Button>
@@ -384,11 +405,80 @@ function SettingsPage() {
         </section>
       )}
 
-      {showGrokDetail && (
+      {showByokForm && (
+        <section className="mt-10">
+          <h2 className="font-display text-2xl">Bring your own key</h2>
+          <p className="mt-1 text-sm text-muted">
+            Any OpenAI-compatible chat API: OpenAI, OpenRouter, Together, Groq, xAI, Azure,
+            a second home box. Base URL only — we append <code>/v1/chat/completions</code>.
+          </p>
+          <form
+            className="mt-4 grid gap-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!byokLocked) save.mutate();
+            }}
+          >
+            <label className="block text-xs font-medium text-muted">
+              Endpoint
+              <Input
+                className="mt-1"
+                value={byokUrl}
+                disabled={byokLocked}
+                placeholder="https://api.openai.com"
+                onChange={(e) => setByokUrl(e.target.value)}
+                autoComplete="off"
+              />
+            </label>
+            <label className="block text-xs font-medium text-muted">
+              Vision model
+              <Input
+                className="mt-1"
+                value={byokVision}
+                disabled={byokLocked}
+                placeholder="gpt-4o-mini"
+                onChange={(e) => setByokVision(e.target.value)}
+                autoComplete="off"
+              />
+            </label>
+            <label className="block text-xs font-medium text-muted">
+              Text / collate model
+              <Input
+                className="mt-1"
+                value={byokText}
+                disabled={byokLocked}
+                placeholder="gpt-4o-mini"
+                onChange={(e) => setByokText(e.target.value)}
+                autoComplete="off"
+              />
+            </label>
+            {!byokLocked && (
+              <label className="block text-xs font-medium text-muted">
+                API key {cfg?.hasByokKey ? "(saved)" : ""}
+                <Input
+                  className="mt-1"
+                  type="password"
+                  value={byokKey}
+                  placeholder={cfg?.hasByokKey ? "Leave blank to keep" : "sk-…"}
+                  onChange={(e) => setByokKey(e.target.value)}
+                  autoComplete="off"
+                />
+              </label>
+            )}
+            {!byokLocked && (
+              <Button type="submit" disabled={save.isPending}>
+                {save.isPending ? "Saving…" : "Save BYOK"}
+              </Button>
+            )}
+          </form>
+        </section>
+      )}
+
+      {showVisionDetail && (
         <section className="mt-8">
-          <h3 className="text-sm font-medium">Grok photo detail</h3>
+          <h3 className="text-sm font-medium">Photo detail</h3>
           <p className="mt-1 text-xs text-muted">
-            High is slower and spends more. Low is enough for large scale stickers.
+            High sends a sharper till slip (more tokens). Low is enough for large scale stickers.
           </p>
           <div className="mt-3 grid grid-cols-2 gap-2">
             {(["low", "high"] as VisionDetail[]).map((d) => (
@@ -413,13 +503,13 @@ function SettingsPage() {
         <div className="mt-4 grid gap-2">
           <Choice
             title="Add to cart, fill in later"
-            body="Default. The photo joins the cart as “Reading…”. PP-OCR, local vision, and Grok all keep working in the background and patch the row when they finish. Local vision and Grok never show a confirm sheet."
+            body="Default. The photo joins the cart as “Reading…”. PP-OCR, local vision, and BYOK all keep working in the background and patch the row when they finish. Local vision and BYOK never show a confirm sheet."
             selected={settings.autoAdd}
             onSelect={() => patch({ autoAdd: true })}
           />
           <Choice
             title="Hold for a look"
-            body="Only for on-device readers (PP-OCR / browser text). You confirm the extract before it joins the cart. Local vision and Grok still skip this sheet."
+            body="Only for on-device readers (PP-OCR / browser text). You confirm the extract before it joins the cart. Local vision and BYOK still skip this sheet."
             selected={!settings.autoAdd}
             onSelect={() => patch({ autoAdd: false })}
           />
@@ -452,8 +542,8 @@ function SettingsPage() {
             v="Your OpenAI-compatible server. VISION_MODEL reads photos; TEXT_MODEL collates names. URL never hard-coded — env wins, then this form."
           />
           <Row
-            k="Grok"
-            v="Off-device last resort. grok-4.5 via xAI when XAI_API_KEY is set. Optional."
+            k="BYOK"
+            v="Your key, your endpoint. OpenAI-compatible /v1/chat/completions. Saved in Settings or BYOK_BASE_URL / BYOK_API_KEY / BYOK_VISION_MODEL / BYOK_TEXT_MODEL."
           />
         </dl>
       </section>

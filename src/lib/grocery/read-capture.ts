@@ -40,7 +40,7 @@ export async function readLabelCapture(
       imageDataUrl: image,
       barcodeHint: barcode,
       detail: cfg.visionDetail,
-      provider: mode === "grok" ? "grok" : "local",
+      provider: mode === "byok" || mode === "grok" ? "byok" : "local",
     },
   });
   if (!result.ok) throw new Error(result.error);

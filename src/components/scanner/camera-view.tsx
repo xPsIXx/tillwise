@@ -333,11 +333,14 @@ export function CameraView({
       }
       if (cfg.read === "local" && !llm.localAvailable) {
         setReaderWarn("No local vision model — labels use PP-OCR on this phone. Add LLM_BASE_URL for receipts.");
-      } else if (cfg.read === "grok" && !llm.grokAvailable) {
-        setReaderWarn("Grok isn’t available. Labels use PP-OCR on this phone.");
-      } else if (mode === "receipt" && !llm.localAvailable && !llm.grokAvailable) {
+      } else if (
+        (cfg.read === "byok" || cfg.read === "grok") &&
+        !llm.byokAvailable
+      ) {
+        setReaderWarn("BYOK isn’t configured. Add an endpoint and API key in Settings.");
+      } else if (mode === "receipt" && !llm.localAvailable && !llm.byokAvailable) {
         setReaderWarn(
-          "Till tape still needs a vision model. Labels can use PP-OCR — add LLM_BASE_URL in Settings for receipts.",
+          "Till tape still needs a vision model. Add a local server or a BYOK endpoint in Settings.",
         );
       } else {
         setReaderWarn(null);
@@ -465,7 +468,7 @@ export function CameraView({
               imageDataUrl: job.image,
               barcodeHint: job.barcode,
               detail: cfg.visionDetail,
-              provider: read === "grok" ? "grok" : "local",
+              provider: read === "byok" || read === "grok" ? "byok" : "local",
             },
           });
           if (!result.ok) throw new Error(result.error);
@@ -1144,7 +1147,7 @@ export function CameraView({
         )}
         <p className="mb-3 text-xs text-muted">
           Reader: {READ_OPTIONS.find((o) => o.id === scanCfg.read)?.title}.{" "}
-          {scanCfg.read === "local" || scanCfg.read === "grok"
+          {scanCfg.read === "local" || scanCfg.read === "byok" || scanCfg.read === "grok"
             ? "Snaps go to the cart and read in the background — no confirm sheet."
             : holdForLook(scanCfg)
               ? "Hold for a look is on — confirm before it joins the cart."

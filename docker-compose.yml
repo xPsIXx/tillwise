@@ -9,7 +9,10 @@ services:
       VISION_MODEL: ${VISION_MODEL:-}
       TEXT_MODEL: ${TEXT_MODEL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
-      XAI_API_KEY: ${XAI_API_KEY:-}
+      BYOK_BASE_URL: ${BYOK_BASE_URL:-}
+      BYOK_API_KEY: ${BYOK_API_KEY:-}
+      BYOK_VISION_MODEL: ${BYOK_VISION_MODEL:-}
+      BYOK_TEXT_MODEL: ${BYOK_TEXT_MODEL:-}
       DATABASE_URL: ${DATABASE_URL:-}
       PGLITE_DATA_DIR: /data/pglite
     volumes:

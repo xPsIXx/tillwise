@@ -38,7 +38,7 @@ export function ShotSheet({
   const [busy, setBusy] = useState<"read" | "save" | null>(null);
   const [read, setRead] = useState<ReadMode>(() => {
     const cur = loadScanSettings().read;
-    if (shot.kind === "receipt") return cur === "grok" ? "grok" : "local";
+    if (shot.kind === "receipt") return cur === "byok" || cur === "grok" ? "byok" : "local";
     return cur;
   });
   const last = shot.lastRead;
@@ -74,7 +74,7 @@ export function ShotSheet({
         await applyLabel(data);
         toast.success(`Read ${data.name}`);
       } else {
-        const data = await readReceiptCapture(image, read === "grok" ? "grok" : "local");
+        const data = await readReceiptCapture(image, read === "byok" || read === "grok" ? "byok" : "local");
         await applyReceipt(data);
         toast.success("Receipt re-read");
       }
@@ -147,7 +147,7 @@ export function ShotSheet({
         const data = await readLabelCapture(next, shot.barcode, read);
         await applyLabel(data);
       } else {
-        const data = await readReceiptCapture(next, read === "grok" ? "grok" : "local");
+        const data = await readReceiptCapture(next, read === "byok" || read === "grok" ? "byok" : "local");
         await applyReceipt(data);
       }
       onChanged();
@@ -173,7 +173,7 @@ export function ShotSheet({
 
   const label = last && "name" in last ? last : null;
   const receipt = last && "items" in last ? last : null;
-  const engines = shot.kind === "receipt" ? READ_OPTIONS.filter((o) => o.id === "local" || o.id === "grok") : READ_OPTIONS;
+  const engines = shot.kind === "receipt" ? READ_OPTIONS.filter((o) => o.id === "local" || o.id === "byok") : READ_OPTIONS;
 
   return (
     <div

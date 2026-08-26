@@ -24,7 +24,10 @@ Never hard-coded. Env vars win over the Settings form.
 | `VISION_MODEL` | Vision LLM for labels + receipts (e.g. `Qwen3-VL-8B`) |
 | `TEXT_MODEL` | Text LLM for collation / name grouping (e.g. `Qwen3.5-9B`). Falls back to `VISION_MODEL`. |
 | `LLM_API_KEY` | Optional bearer token for the local server |
-| `XAI_API_KEY` | Optional. Only if you want Grok as a reader/collate option |
+| `BYOK_BASE_URL` | Remote OpenAI-compatible API base |
+| `BYOK_API_KEY` | API key for that endpoint |
+| `BYOK_VISION_MODEL` | Vision model id on that API |
+| `BYOK_TEXT_MODEL` | Text model for collation |
 | `DATABASE_URL` | Optional Postgres URL. If unset, PGLite (embedded) is used |
 
 The app calls `${LLM_BASE_URL}/v1/chat/completions` with `VISION_MODEL` for photos and `TEXT_MODEL` for collation. Same shape as llama-swap / vLLM / OpenAI.
@@ -35,7 +38,7 @@ If `LLM_BASE_URL` is not in the environment, Settings can save the same values i
 
 **Detect:** TensorFlow.js → PP-OCRv6 → shape+barcode → barcode → manual
 
-**Read:** local vision LLM → PP-OCRv6 on-device → Grok → browser text
+**Read:** local vision LLM → PP-OCRv6 on-device → BYOK API → browser text
 
 **Collate:** local `TEXT_MODEL` → Grok
 

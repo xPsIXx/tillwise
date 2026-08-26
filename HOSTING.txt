@@ -40,7 +40,10 @@ Copy these into the process environment. Environment wins over the Settings form
                    e.g. Qwen3.5-9B
                    If unset, VISION_MODEL is used.
   LLM_API_KEY      Optional bearer token for the local server
-  XAI_API_KEY      Optional. Only if you want Grok as a reader/collate option.
+  BYOK_BASE_URL    Remote OpenAI-compatible API (OpenAI, OpenRouter, xAI, …)
+  BYOK_API_KEY     API key for that endpoint
+  BYOK_VISION_MODEL  Vision model id
+  BYOK_TEXT_MODEL  Text model for collation (falls back to vision)
   DATABASE_URL     Optional Postgres URL (Neon, etc.). If unset, the
                    shipped PGLite files under PGLITE_DATA_DIR are used.
   PGLITE_DATA_DIR  Folder for those files. Docker default: /data/pglite

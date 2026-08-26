@@ -11,7 +11,7 @@ export type MatchStatus =
 
 export type ScanMode = "label" | "receipt";
 
-export type LlmProvider = "grok" | "local";
+export type LlmProvider = "local" | "byok" | "grok";
 
 export type Trip = {
   id: number;
