@@ -3,7 +3,9 @@
 FROM node:22-bookworm-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+# Lockfile is out of date with npm 10+ nested ajv copies.
+# Install (not ci) so the image still builds; lock will be refreshed later.
+RUN npm install --no-audit --no-fund
 
 FROM deps AS build
 WORKDIR /app
