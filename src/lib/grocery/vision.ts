@@ -1,4 +1,5 @@
 import { resolveEndpoint } from "./llm";
+import { parseLabelText } from "./parse-local";
 import type {
   CollatedItem,
   CollationResult,
@@ -125,21 +126,23 @@ function num(v: unknown): number | null {
 }
 
 function asLabel(obj: Record<string, unknown>): LabelExtraction {
+  const rawText = str(obj.raw_text) ?? str(obj.rawText) ?? "";
+  const fallback = rawText ? parseLabelText(rawText, str(obj.barcode)) : null;
   return {
-    name: str(obj.name) ?? "Unknown item",
+    name: str(obj.name) ?? fallback?.name ?? "Unknown item",
     brand: str(obj.brand),
     description: str(obj.description),
-    barcode: str(obj.barcode),
+    barcode: str(obj.barcode) ?? fallback?.barcode ?? null,
     category: str(obj.category),
-    quantity: num(obj.quantity),
-    quantityUnit: str(obj.quantity_unit) ?? str(obj.quantityUnit),
-    weightValue: num(obj.weight_value) ?? num(obj.weightValue),
-    weightUnit: str(obj.weight_unit) ?? str(obj.weightUnit),
-    unitPrice: num(obj.unit_price) ?? num(obj.unitPrice),
-    linePrice: num(obj.line_price) ?? num(obj.linePrice),
-    currency: str(obj.currency),
+    quantity: num(obj.quantity) ?? fallback?.quantity,
+    quantityUnit: str(obj.quantity_unit) ?? str(obj.quantityUnit) ?? fallback?.quantityUnit,
+    weightValue: num(obj.weight_value) ?? num(obj.weightValue) ?? fallback?.weightValue ?? null,
+    weightUnit: str(obj.weight_unit) ?? str(obj.weightUnit) ?? fallback?.weightUnit ?? null,
+    unitPrice: num(obj.unit_price) ?? num(obj.unitPrice) ?? fallback?.unitPrice ?? null,
+    linePrice: num(obj.line_price) ?? num(obj.linePrice) ?? fallback?.linePrice ?? null,
+    currency: str(obj.currency) ?? fallback?.currency,
     origin: str(obj.origin),
-    rawText: str(obj.raw_text) ?? str(obj.rawText) ?? "",
+    rawText,
   };
 }
 
@@ -195,6 +198,11 @@ export async function readLabelImage(
     prompt: `This is a photo of a grocery product: a produce scale sticker, packaged-goods label, shelf tag, or barcode.
 Extract what is actually printed. Prefer the scale sticker when both a bag and a sticker are visible.
 ${hint}
+Produce stickers usually show THREE numbers: net weight, unit price (per kg / per lb / per 100g), and line total.
+- unit_price = the rate (AED/kg, $/lb, price per 100g converted to per kg by ×10). Not the total.
+- line_price = the amount charged for this pack (TOTAL / NET / the larger money amount).
+- barcode = the digits under the barcode or EAN/UPC printed on the sticker (8–14 digits, no spaces). Do not invent one.
+If only one money amount is printed next to /kg or PER KG, that is unit_price. If weight and total are present, you may compute unit_price = total / weight_in_kg.
 Return JSON with keys:
 name, brand, description, barcode, category, quantity, quantity_unit, weight_value, weight_unit, unit_price, line_price, currency, origin, raw_text.
 weight_unit one of g, kg, lb, oz, ml, l or null.
@@ -217,11 +225,12 @@ export async function readReceiptImage(
     detail: opts?.detail ?? "high",
     provider: opts?.provider ?? "local",
     task: "vision",
-    prompt: `This is a photo of a grocery receipt, possibly only a portion of a long till tape.
-Extract every visible line item and any totals. If the receipt is cut off, set is_partial true and portion_hint to top, middle, or bottom.
+    prompt: `This is a photo of a grocery receipt / till slip, possibly only a portion of a long tape.
+Read every visible line even if the print is faint. If the receipt is cut off, set is_partial true and portion_hint to top, middle, or bottom.
 Return JSON with keys:
 store_name, store_location, datetime, is_partial, portion_hint, items, subtotal, tax, total, currency, raw_text.
 Each item: name, quantity, quantity_unit, weight_value, weight_unit, unit_price, line_price.
+unit_price is the per-unit or per-kg rate when printed (often next to weight); line_price is the charged amount.
 Ignore ads, loyalty points, and payment-card numbers. Prices are numbers.`,
   });
   if (!result.ok) return result;

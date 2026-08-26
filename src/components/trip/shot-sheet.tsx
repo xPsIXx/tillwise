@@ -2,7 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { ImagePlus, LoaderCircle, RefreshCw, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { blobToDataUrl, makeThumbnail } from "@/lib/grocery/image";
+import {
+  blobToDataUrl,
+  LABEL_CAPTURE,
+  makeThumbnail,
+  RECEIPT_CAPTURE,
+} from "@/lib/grocery/image";
 import { readLabelCapture, readReceiptCapture } from "@/lib/grocery/read-capture";
 import {
   addLabelItem,
@@ -15,7 +20,7 @@ import {
 } from "@/lib/grocery/server";
 import { loadScanSettings, READ_OPTIONS, type ReadMode } from "@/lib/grocery/settings";
 import type { LabelExtraction, ReceiptExtraction, ScanShot } from "@/lib/grocery/types";
-import { money, tripDate } from "@/lib/grocery/format";
+import { money, tripDate, unitMoney, weight } from "@/lib/grocery/format";
 import { cn } from "@/lib/utils";
 
 export function ShotSheet({
@@ -128,7 +133,8 @@ export function ShotSheet({
   async function replacePhoto(file: File) {
     setBusy("save");
     try {
-      const next = await blobToDataUrl(file);
+      const preset = shot.kind === "receipt" ? RECEIPT_CAPTURE : LABEL_CAPTURE;
+      const next = await blobToDataUrl(file, preset.maxSide, preset.quality);
       const thumb = await makeThumbnail(next);
       await updateScanShot({
         data: { shotId: shot.id, imageData: next, thumbnailData: thumb },
@@ -205,9 +211,20 @@ export function ShotSheet({
           </div>
 
           {label && (
-            <p className="mt-3 text-sm text-muted">
-              {[label.brand, label.rawText.slice(0, 80)].filter(Boolean).join(" · ") || "No text stored"}
-            </p>
+            <div className="mt-3 space-y-1 text-sm text-muted">
+              <p>
+                {weight(label.weightValue, label.weightUnit)}
+                {" · "}
+                {unitMoney(label.unitPrice, label.currency ?? "AED", label.weightUnit)}
+                {" · "}
+                {money(label.linePrice, label.currency ?? "AED")}
+              </p>
+              {label.barcode ? <p className="font-mono text-xs">{label.barcode}</p> : null}
+              <p className="text-xs">
+                {[label.brand, label.rawText.slice(0, 80)].filter(Boolean).join(" · ") ||
+                  "No extra text stored"}
+              </p>
+            </div>
           )}
           {receipt && (
             <p className="mt-3 text-sm text-muted">

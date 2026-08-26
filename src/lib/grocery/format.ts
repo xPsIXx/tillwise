@@ -17,6 +17,17 @@ export function money(
   }
 }
 
+export function unitMoney(
+  value: number | null | undefined,
+  currency = CURRENCY_FALLBACK,
+  weightUnit?: string | null,
+): string {
+  if (value == null || Number.isNaN(value)) return "—";
+  const u = (weightUnit ?? "kg").toLowerCase();
+  const suffix = u === "lb" || u === "oz" ? `/${u}` : "/kg";
+  return `${money(value, currency)} ${suffix}`;
+}
+
 export function weight(
   value: number | null | undefined,
   unit: string | null | undefined,

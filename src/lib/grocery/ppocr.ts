@@ -514,14 +514,31 @@ export async function runPpocr(
   const score = itemScore(best);
   const text = kept.map(itemText).filter(Boolean).join("\n");
   let crop: PpocrHit["crop"] = null;
-  const bb = normalizeBox(best, w, h);
-  if (bb) {
-    const extra = 0.1;
+  for (const it of kept) {
+    const bb = normalizeBox(it, w, h);
+    if (!bb) continue;
+    const next = {
+      x0: bb[0],
+      y0: bb[1],
+      x1: bb[0] + bb[2],
+      y1: bb[1] + bb[3],
+    };
+    crop = crop
+      ? {
+          x0: Math.min(crop.x0, next.x0),
+          y0: Math.min(crop.y0, next.y0),
+          x1: Math.max(crop.x1, next.x1),
+          y1: Math.max(crop.y1, next.y1),
+        }
+      : next;
+  }
+  if (crop) {
+    const extra = 0.08;
     crop = {
-      x0: Math.max(0, bb[0] - extra),
-      y0: Math.max(0, bb[1] - extra),
-      x1: Math.min(1, bb[0] + bb[2] + extra),
-      y1: Math.min(1, bb[1] + bb[3] + extra),
+      x0: Math.max(0, crop.x0 - extra),
+      y0: Math.max(0, crop.y0 - extra),
+      x1: Math.min(1, crop.x1 + extra),
+      y1: Math.min(1, crop.y1 + extra),
     };
   }
   return { ready: score >= lockAt || (useReticle && text.length >= 6), score, text, crop };

@@ -1,3 +1,11 @@
+export type CropBox = { x0: number; y0: number; x1: number; y1: number };
+
+export const LABEL_CAPTURE = { maxSide: 1600, quality: 0.88 } as const;
+export const RECEIPT_CAPTURE = { maxSide: 2200, quality: 0.93 } as const;
+
+export const LABEL_VIEWFINDER: CropBox = { x0: 0.12, y0: 0.18, x1: 0.88, y1: 0.72 };
+export const RECEIPT_VIEWFINDER: CropBox = { x0: 0.12, y0: 0.1, x1: 0.88, y1: 0.82 };
+
 export async function blobToDataUrl(
   blob: Blob,
   maxWidth = 1280,
@@ -53,39 +61,72 @@ export function captureCanvas(
 ): string {
   const vw = video.videoWidth || 1280;
   const vh = video.videoHeight || 720;
-  const scale = Math.min(1, maxWidth / vw);
+  const scale = Math.min(1, maxWidth / Math.max(vw, vh));
   const canvas = document.createElement("canvas");
-  canvas.width = Math.round(vw * scale);
-  canvas.height = Math.round(vh * scale);
+  canvas.width = Math.max(1, Math.round(vw * scale));
+  canvas.height = Math.max(1, Math.round(vh * scale));
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas is not available");
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
   return canvas.toDataURL("image/jpeg", quality);
 }
 
-export type CropBox = { x0: number; y0: number; x1: number; y1: number };
-
-/** Crop the live video to a normalized 0..1 box (PP-OCR label region). */
+/** Crop the live video to a normalized 0..1 box (label region). */
 export function cropVideo(
   video: HTMLVideoElement,
   box: CropBox,
-  quality = 0.82,
+  quality = LABEL_CAPTURE.quality,
+  minSide = 1000,
 ): string {
   const vw = video.videoWidth || 1280;
   const vh = video.videoHeight || 720;
-  const x0 = Math.max(0, Math.round(box.x0 * vw));
-  const y0 = Math.max(0, Math.round(box.y0 * vh));
-  const x1 = Math.min(vw, Math.round(box.x1 * vw));
-  const y1 = Math.min(vh, Math.round(box.y1 * vh));
+  return cropSource(video, vw, vh, box, quality, minSide);
+}
+
+export function cropDataUrl(
+  img: HTMLImageElement | HTMLCanvasElement,
+  box: CropBox,
+  quality = LABEL_CAPTURE.quality,
+  minSide = 1000,
+): string {
+  const w = "naturalWidth" in img ? img.naturalWidth || img.width : img.width;
+  const h = "naturalHeight" in img ? img.naturalHeight || img.height : img.height;
+  return cropSource(img, w, h, box, quality, minSide);
+}
+
+function cropSource(
+  source: CanvasImageSource,
+  sw: number,
+  sh: number,
+  box: CropBox,
+  quality: number,
+  minSide: number,
+): string {
+  const x0 = Math.max(0, Math.round(box.x0 * sw));
+  const y0 = Math.max(0, Math.round(box.y0 * sh));
+  const x1 = Math.min(sw, Math.round(box.x1 * sw));
+  const y1 = Math.min(sh, Math.round(box.y1 * sh));
   const w = Math.max(1, x1 - x0);
   const h = Math.max(1, y1 - y0);
+  const scale = Math.max(1, minSide / Math.max(w, h));
   const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
+  canvas.width = Math.max(1, Math.round(w * scale));
+  canvas.height = Math.max(1, Math.round(h * scale));
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas is not available");
-  ctx.drawImage(video, x0, y0, w, h, 0, 0, w, h);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(source, x0, y0, w, h, 0, 0, canvas.width, canvas.height);
   return canvas.toDataURL("image/jpeg", quality);
+}
+
+export function padCrop(box: CropBox, pad = 0.08): CropBox {
+  return {
+    x0: Math.max(0, box.x0 - pad),
+    y0: Math.max(0, box.y0 - pad),
+    x1: Math.min(1, box.x1 + pad),
+    y1: Math.min(1, box.y1 + pad),
+  };
 }
 
 export function imageToCanvas(img: HTMLImageElement, maxSide = 960): HTMLCanvasElement {

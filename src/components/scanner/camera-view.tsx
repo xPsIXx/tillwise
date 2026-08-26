@@ -18,11 +18,15 @@ import { detectBarcode, scoreFrame, StabilityGate } from "@/lib/grocery/detect";
 import {
   blobToDataUrl,
   captureCanvas,
+  cropDataUrl,
   cropVideo,
   imageToCanvas,
+  LABEL_CAPTURE,
+  LABEL_VIEWFINDER,
   loadImage,
   makeThumbnail,
   publicImageToDataUrl,
+  RECEIPT_CAPTURE,
   type CropBox,
 } from "@/lib/grocery/image";
 import { extractionIsThin, readLabelOnDevice } from "@/lib/grocery/parse-local";
@@ -170,6 +174,14 @@ async function openCamera(facing: "environment" | "user" | "any"): Promise<Media
     facing === "any"
       ? [{ audio: false, video: true }]
       : [
+          {
+            audio: false,
+            video: {
+              facingMode: { ideal: facing },
+              width: { ideal: 1920 },
+              height: { ideal: 1080 },
+            },
+          },
           { audio: false, video: { facingMode: { ideal: facing } } },
           { audio: false, video: true },
         ];
@@ -611,14 +623,27 @@ export function CameraView({
     try {
       const video = videoRef.current;
       const crop = lastCropRef.current;
-      const cfg = settingsRef.current;
       let image: string;
       if (fromBlob) {
-        image = await blobToDataUrl(fromBlob);
-      } else if (video && crop && cfg.detect === "ppocr" && mode === "label") {
-        image = cropVideo(video, crop);
+        const preset = mode === "receipt" ? RECEIPT_CAPTURE : LABEL_CAPTURE;
+        image = await blobToDataUrl(fromBlob, preset.maxSide, preset.quality);
+        if (mode === "label" && ppocrReady()) {
+          try {
+            const img = await loadImage(image);
+            const hit = await runPpocr(imageToCanvas(img, 1280), undefined, {
+              reticle: false,
+            });
+            if (hit.crop) image = cropDataUrl(img, hit.crop);
+          } catch {
+            /* keep the full still */
+          }
+        }
+      } else if (!video) {
+        throw new Error("Camera is not ready");
+      } else if (mode === "label") {
+        image = cropVideo(video, crop ?? LABEL_VIEWFINDER);
       } else {
-        image = captureCanvas(video!);
+        image = captureCanvas(video, RECEIPT_CAPTURE.maxSide, RECEIPT_CAPTURE.quality);
       }
       let barcode: string | null = null;
       if (mode === "label") {

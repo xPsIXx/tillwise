@@ -1,6 +1,6 @@
 import { LoaderCircle, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import type { TripItem } from "@/lib/grocery/types";
-import { money, qty, weight } from "@/lib/grocery/format";
+import { money, qty, unitMoney, weight } from "@/lib/grocery/format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -55,7 +55,9 @@ export function ItemCard({
             <p className="truncate text-xs text-muted">
               {reading
                 ? "Captured — filling in from the photo"
-                : [item.brand, item.category].filter(Boolean).join(" · ") ||
+                : [item.brand, item.category, item.barcode ? `#${item.barcode}` : null]
+                    .filter(Boolean)
+                    .join(" · ") ||
                   item.description ||
                   "Scanned item"}
             </p>
@@ -64,13 +66,19 @@ export function ItemCard({
         </div>
         <dl className="mt-2 grid grid-cols-3 gap-2 text-xs">
           <Stat label="Weight" value={weight(item.weightValue, item.weightUnit)} />
-          <Stat label="Qty" value={qty(item.quantity, item.quantityUnit)} />
           <Stat
-            label="Price"
+            label="Unit"
+            value={unitMoney(item.unitPrice, item.currency ?? currency, item.weightUnit)}
+          />
+          <Stat
+            label="Total"
             value={money(item.linePrice, item.currency ?? currency)}
             strong
           />
         </dl>
+        {!reading && item.quantity != null && item.quantity !== 1 ? (
+          <p className="mt-1 text-[11px] text-subtle">{qty(item.quantity, item.quantityUnit)}</p>
+        ) : null}
         {(onEdit || onDelete || onReprocess) && !reading && (
           <div className="mt-2 flex justify-end gap-1">
             {onReprocess && (
