@@ -108,6 +108,9 @@ function Home() {
         <div className="flex items-baseline justify-between">
           <h2 className="font-display text-2xl">Recent</h2>
           <div className="flex gap-3">
+            <Link to="/analytics" className="text-sm text-muted hover:text-fg">
+              Analytics
+            </Link>
             <Link to="/prices" className="text-sm text-muted hover:text-fg">
               Prices
             </Link>

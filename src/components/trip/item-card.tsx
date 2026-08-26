@@ -19,12 +19,14 @@ export function ItemCard({
   onEdit,
   onDelete,
   onReprocess,
+  onMatch,
 }: {
   item: TripItem;
   currency: string;
   onEdit?: (item: TripItem) => void;
   onDelete?: (item: TripItem) => void;
   onReprocess?: (item: TripItem) => void;
+  onMatch?: (item: TripItem) => void;
 }) {
   const match = MATCH[item.matchStatus] ?? MATCH.unmatched;
   const reading = item.matchStatus === "processing";
@@ -55,7 +57,14 @@ export function ItemCard({
             <p className="truncate text-xs text-muted">
               {reading
                 ? "Captured — filling in from the photo"
-                : [item.brand, item.category, item.barcode ? `#${item.barcode}` : null]
+                : [
+                    item.productName && item.productName !== item.name
+                      ? item.productName
+                      : null,
+                    item.brand,
+                    item.category,
+                    item.barcode ? `#${item.barcode}` : null,
+                  ]
                     .filter(Boolean)
                     .join(" · ") ||
                   item.description ||
@@ -86,8 +95,19 @@ export function ItemCard({
         {!reading && item.quantity != null && item.quantity !== 1 ? (
           <p className="mt-1 text-[11px] text-subtle">{qty(item.quantity, item.quantityUnit)}</p>
         ) : null}
-        {(onEdit || onDelete || onReprocess) && !reading && (
-          <div className="mt-2 flex justify-end gap-1">
+        {(onEdit || onDelete || onReprocess || onMatch) && !reading && (
+          <div className="mt-2 flex flex-wrap justify-end gap-1">
+            {onMatch && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-9 px-2 text-muted"
+                onClick={() => onMatch(item)}
+              >
+                {item.productId ? "Rematch" : "Match product"}
+              </Button>
+            )}
             {onReprocess && (
               <Button
                 type="button"

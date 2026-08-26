@@ -1,12 +1,16 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getSql } from "@/lib/db";
+import { canonicalGuess, nameKey as catalogKey, parseReceiptDate, perUnitPrice } from "./catalog";
 import type {
+  CanonicalProduct,
   CollatedItem,
+  GroceryAnalytics,
   LabelExtraction,
   LlmProvider,
   PricePoint,
   ProductMemory,
   ReceiptCapture,
+  StoreUnitPrice,
   ReceiptExtraction,
   ScanShot,
   Trip,
@@ -56,6 +60,8 @@ type ItemRow = {
   match_status: string;
   match_confidence: unknown;
   created_at: unknown;
+  product_id?: number | null;
+  product_name?: string | null;
 };
 
 type ReceiptRow = {
@@ -179,6 +185,8 @@ function mapItem(row: ItemRow): TripItem {
     matchStatus: (row.match_status as TripItem["matchStatus"]) || "unmatched",
     matchConfidence: n(row.match_confidence),
     createdAt: iso(row.created_at),
+    productId: row.product_id != null ? Number(row.product_id) : null,
+    productName: row.product_name ?? null,
   };
 }
 
@@ -220,12 +228,14 @@ async function loadTrip(tripId: number): Promise<Trip | null> {
 async function loadItems(tripId: number): Promise<TripItem[]> {
   const sql = await getSql();
   const rows = await sql<ItemRow>`
-    select id, trip_id, source, name, brand, description, barcode, category,
-           quantity, quantity_unit, weight_value, weight_unit, unit_price, line_price,
-           currency, raw_text, thumbnail_data, match_status, match_confidence, created_at
-      from trip_items
-     where trip_id = ${tripId}
-     order by created_at asc, id asc
+    select i.id, i.trip_id, i.source, i.name, i.brand, i.description, i.barcode, i.category,
+           i.quantity, i.quantity_unit, i.weight_value, i.weight_unit, i.unit_price, i.line_price,
+           i.currency, i.raw_text, i.thumbnail_data, i.match_status, i.match_confidence, i.created_at,
+           i.product_id, p.name as product_name
+      from trip_items i
+      left join products p on p.id = i.product_id
+     where i.trip_id = ${tripId}
+     order by i.created_at asc, i.id asc
   `;
   return rows.map(mapItem);
 }
@@ -378,6 +388,17 @@ export const addLabelItem = createServerFn({ method: "POST" })
     if (!row) throw new Error("Could not save item");
     const item = mapItem(row);
     await rememberProduct(sql, item, trip.storeName);
+    const productId = await resolveCanonical(sql, {
+      name: item.name,
+      brand: item.brand,
+      barcode: item.barcode,
+      category: item.category,
+      unit: item.weightUnit ?? item.quantityUnit,
+    });
+    if (productId) {
+      await sql`update trip_items set product_id = ${productId} where id = ${item.id}`;
+      item.productId = productId;
+    }
     return item;
   });
 
@@ -544,6 +565,7 @@ export const addReceiptCapture = createServerFn({ method: "POST" })
       `;
     }
     if (!rows[0]) throw new Error("Could not save receipt");
+    await applyReceiptMeta(sql, data.tripId, data.extracted);
     return mapReceipt(rows[0]);
   });
 
@@ -566,7 +588,9 @@ export const updateReceiptCapture = createServerFn({ method: "POST" })
        returning id, trip_id, sequence, extracted_json, thumbnail_data, created_at
     `;
     if (!rows[0]) throw new Error("Receipt portion not found");
-    return mapReceipt(rows[0]);
+    const mapped = mapReceipt(rows[0]);
+    if (mapped.extracted) await applyReceiptMeta(sql, mapped.tripId, mapped.extracted);
+    return mapped;
   });
 
 export const deleteReceiptCapture = createServerFn({ method: "POST" })
@@ -688,18 +712,35 @@ export const collateTrip = createServerFn({ method: "POST" })
       }
     }
 
-    await sql`
-      update trips
-         set status = 'review',
-             store_name = coalesce(${collated.data.storeName}, store_name),
-             store_location = coalesce(${collated.data.storeLocation}, store_location),
-             receipt_subtotal = ${collated.data.subtotal},
-             receipt_tax = ${collated.data.tax},
-             receipt_total = ${collated.data.total},
-             currency = ${collated.data.currency},
-             notes = coalesce(${collated.data.notes}, notes)
-       where id = ${tripId}
-    `;
+    const when = parseReceiptDate(collated.data.datetime ?? receipt?.datetime ?? null);
+    if (when) {
+      await sql`
+        update trips
+           set status = 'review',
+               store_name = coalesce(${collated.data.storeName}, store_name),
+               store_location = coalesce(${collated.data.storeLocation}, store_location),
+               started_at = ${when},
+               receipt_subtotal = ${collated.data.subtotal},
+               receipt_tax = ${collated.data.tax},
+               receipt_total = ${collated.data.total},
+               currency = ${collated.data.currency},
+               notes = coalesce(${collated.data.notes}, notes)
+         where id = ${tripId}
+      `;
+    } else {
+      await sql`
+        update trips
+           set status = 'review',
+               store_name = coalesce(${collated.data.storeName}, store_name),
+               store_location = coalesce(${collated.data.storeLocation}, store_location),
+               receipt_subtotal = ${collated.data.subtotal},
+               receipt_tax = ${collated.data.tax},
+               receipt_total = ${collated.data.total},
+               currency = ${collated.data.currency},
+               notes = coalesce(${collated.data.notes}, notes)
+         where id = ${tripId}
+      `;
+    }
 
     const next = await loadTrip(tripId);
     if (!next) throw new Error("Trip not found");
@@ -730,7 +771,18 @@ async function insertMerged(
     )
     returning id
   `;
-  return Number(rows[0]?.id ?? 0);
+  const id = Number(rows[0]?.id ?? 0);
+  const productId = await resolveCanonical(sql, {
+    name: item.name,
+    brand: item.brand,
+    barcode: item.barcode,
+    category: item.category,
+    unit: item.weightUnit ?? item.quantityUnit,
+  });
+  if (id && productId) {
+    await sql`update trip_items set product_id = ${productId} where id = ${id}`;
+  }
+  return id;
 }
 
 export const addScanShot = createServerFn({ method: "POST" })
@@ -885,10 +937,93 @@ export const completeTrip = createServerFn({ method: "POST" })
   });
 
 function nameKey(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
+  return catalogKey(name);
+}
+
+async function applyReceiptMeta(
+  sql: Awaited<ReturnType<typeof getSql>>,
+  tripId: number,
+  extracted: { storeName?: string | null; storeLocation?: string | null; datetime?: string | null },
+) {
+  const store = extracted.storeName?.trim() || null;
+  const loc = extracted.storeLocation?.trim() || null;
+  const when = parseReceiptDate(extracted.datetime ?? null);
+  if (!store && !loc && !when) return;
+  if (when) {
+    await sql`
+      update trips
+         set store_name = coalesce(${store}, store_name),
+             store_location = coalesce(${loc}, store_location),
+             started_at = ${when}
+       where id = ${tripId}
+    `;
+  } else {
+    await sql`
+      update trips
+         set store_name = coalesce(${store}, store_name),
+             store_location = coalesce(${loc}, store_location)
+       where id = ${tripId}
+    `;
+  }
+}
+
+async function resolveCanonical(
+  sql: Awaited<ReturnType<typeof getSql>>,
+  input: { name: string; brand?: string | null; barcode?: string | null; category?: string | null; unit?: string | null },
+): Promise<number | null> {
+  const key = nameKey(input.name);
+  const guess = canonicalGuess(input.name);
+  if (!key) return null;
+  const barcode = input.barcode?.trim() || null;
+  if (barcode) {
+    const byCode = await sql<{ product_id: number }>`
+      select product_id from product_aliases where barcode = ${barcode} limit 1
+    `;
+    if (byCode[0]) return Number(byCode[0].product_id);
+  }
+  const byAlias = await sql<{ product_id: number }>`
+    select product_id from product_aliases
+     where alias_key = ${key} or alias_key = ${guess}
+     limit 1
+  `;
+  if (byAlias[0]) {
+    const pid = Number(byAlias[0].product_id);
+    if (barcode) {
+      await sql`
+        insert into product_aliases (product_id, alias_key, barcode, source)
+        values (${pid}, ${`bc:${barcode}`}, ${barcode}, 'auto')
+        on conflict (alias_key) do nothing
+      `;
+    }
+    return pid;
+  }
+  const created = await sql<{ id: number }>`
+    insert into products (name, brand, category, unit)
+    values (${input.name}, ${input.brand ?? null}, ${input.category ?? null}, ${input.unit ?? null})
+    returning id
+  `;
+  const pid = Number(created[0]?.id ?? 0);
+  if (!pid) return null;
+  await sql`
+    insert into product_aliases (product_id, alias_key, barcode, source)
+    values (${pid}, ${key}, ${barcode}, 'auto')
+    on conflict (alias_key) do nothing
+  `;
+  if (guess && guess !== key) {
+    await sql`
+      insert into product_aliases (product_id, alias_key, barcode, source)
+      values (${pid}, ${guess}, ${barcode}, 'auto')
+      on conflict (alias_key) do nothing
+    `;
+  }
+  if (barcode) {
+    await sql`
+      insert into product_aliases (product_id, alias_key, barcode, source)
+      values (${pid}, ${`bc:${barcode}`}, ${barcode}, 'auto')
+      on conflict (alias_key) do nothing
+    `;
+  }
+  return pid;
 }
 
 type CatalogInput = {
@@ -1006,6 +1141,23 @@ async function rememberCatalog(sql: Awaited<ReturnType<typeof getSql>>, input: C
           ${input.unitPrice}, ${input.linePrice}, ${input.weightValue}, ${input.weightUnit},
           ${input.currency ?? "AED"}
         )
+      `;
+    }
+    const productId = await resolveCanonical(sql, {
+      name: input.name,
+      brand: input.brand,
+      barcode: input.barcode,
+      category: input.category,
+      unit: input.weightUnit ?? input.quantityUnit,
+    });
+    if (productId) {
+      await sql`
+        update product_memory set product_id = ${productId}
+         where name_key = ${key} or (${barcode}::text is not null and barcode = ${barcode})
+      `;
+      await sql`
+        update price_observations set product_id = ${productId}
+         where name_key = ${key} and product_id is null
       `;
     }
   } catch (err) {
@@ -1189,6 +1341,273 @@ export const listRememberedProducts = createServerFn({ method: "GET" }).handler(
       seenCount: n(row.seen_count) ?? 1,
       updatedAt: iso(row.updated_at),
     }));
+  },
+);
+
+export const listCanonicalProducts = createServerFn({ method: "GET" }).handler(
+  async (): Promise<CanonicalProduct[]> => {
+    const sql = await getSql();
+    const rows = await sql<{
+      id: number;
+      name: string;
+      brand: string | null;
+      category: string | null;
+      unit: string | null;
+      alias_count: unknown;
+      seen_count: unknown;
+    }>`
+      select p.id, p.name, p.brand, p.category, p.unit,
+             (select count(*) from product_aliases a where a.product_id = p.id) as alias_count,
+             coalesce((select sum(m.seen_count) from product_memory m where m.product_id = p.id), 1) as seen_count
+        from products p
+       order by p.updated_at desc, p.id desc
+       limit 200
+    `;
+    return rows.map((row) => ({
+      id: Number(row.id),
+      name: row.name,
+      brand: row.brand,
+      category: row.category,
+      unit: row.unit,
+      aliasCount: n(row.alias_count) ?? 0,
+      seenCount: n(row.seen_count) ?? 1,
+    }));
+  },
+);
+
+export const searchCanonicalProducts = createServerFn({ method: "POST" })
+  .validator((input: { query: string }) => input)
+  .handler(async ({ data }): Promise<CanonicalProduct[]> => {
+    const q = catalogKey(data.query);
+    const sql = await getSql();
+    const like = `%${q || data.query.trim().toLowerCase()}%`;
+    const rows = await sql<{
+      id: number;
+      name: string;
+      brand: string | null;
+      category: string | null;
+      unit: string | null;
+    }>`
+      select distinct p.id, p.name, p.brand, p.category, p.unit
+        from products p
+        left join product_aliases a on a.product_id = p.id
+       where lower(p.name) like ${like}
+          or a.alias_key like ${like}
+          or coalesce(a.barcode, '') like ${like}
+       order by p.name
+       limit 30
+    `;
+    return rows.map((row) => ({
+      id: Number(row.id),
+      name: row.name,
+      brand: row.brand,
+      category: row.category,
+      unit: row.unit,
+      aliasCount: 0,
+      seenCount: 0,
+    }));
+  });
+
+export const assignItemProduct = createServerFn({ method: "POST" })
+  .validator(
+    (input: {
+      itemId: number;
+      productId?: number | null;
+      newName?: string | null;
+    }) => input,
+  )
+  .handler(async ({ data }): Promise<TripItem> => {
+    const sql = await getSql();
+    const existing = await sql<ItemRow>`
+      select id, trip_id, source, name, brand, description, barcode, category,
+             quantity, quantity_unit, weight_value, weight_unit, unit_price, line_price,
+             currency, raw_text, thumbnail_data, match_status, match_confidence, created_at,
+             product_id
+        from trip_items
+       where id = ${data.itemId}
+       limit 1
+    `;
+    const row = existing[0];
+    if (!row) throw new Error("Item not found");
+    let productId = data.productId ?? null;
+    if (!productId && data.newName?.trim()) {
+      productId = await resolveCanonical(sql, {
+        name: data.newName.trim(),
+        brand: row.brand,
+        barcode: row.barcode,
+        category: row.category,
+        unit: row.weight_unit ?? row.quantity_unit,
+      });
+    }
+    if (productId) {
+      const key = nameKey(row.name);
+      await sql`
+        insert into product_aliases (product_id, alias_key, barcode, source)
+        values (${productId}, ${key}, ${row.barcode}, 'manual')
+        on conflict (alias_key) do update set product_id = excluded.product_id, source = 'manual'
+      `;
+      if (row.barcode) {
+        await sql`
+          insert into product_aliases (product_id, alias_key, barcode, source)
+          values (${productId}, ${`bc:${row.barcode}`}, ${row.barcode}, 'manual')
+          on conflict (alias_key) do update set product_id = excluded.product_id
+        `;
+      }
+    }
+    await sql`update trip_items set product_id = ${productId} where id = ${data.itemId}`;
+    const items = await loadItems(Number(row.trip_id));
+    const next = items.find((i) => i.id === data.itemId);
+    if (!next) throw new Error("Item not found");
+    return next;
+  });
+
+export const getGroceryAnalytics = createServerFn({ method: "GET" }).handler(
+  async (): Promise<GroceryAnalytics> => {
+    const sql = await getSql();
+    const trips = await sql<{
+      id: number;
+      store_name: string | null;
+      started_at: unknown;
+      receipt_total: unknown;
+      currency: string;
+      status: string;
+    }>`
+      select id, store_name, started_at, receipt_total, currency, status
+        from trips
+       where status = 'complete' or receipt_total is not null
+       order by started_at asc
+    `;
+    const currency = trips[0]?.currency ?? "AED";
+    const usable = trips.filter((t) => n(t.receipt_total) != null);
+    const totalSpend = usable.reduce((acc, t) => acc + (n(t.receipt_total) ?? 0), 0);
+    const tripCount = usable.length;
+    const avgBasket = tripCount ? totalSpend / tripCount : 0;
+
+    const monthMap = new Map<string, { spend: number; trips: number }>();
+    for (const t of usable) {
+      const d = new Date(iso(t.started_at));
+      if (Number.isNaN(d.getTime())) continue;
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const cur = monthMap.get(key) ?? { spend: 0, trips: 0 };
+      cur.spend += n(t.receipt_total) ?? 0;
+      cur.trips += 1;
+      monthMap.set(key, cur);
+    }
+    const months = [...monthMap.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(-12)
+      .map(([month, v]) => {
+        const [y, m] = month.split("-");
+        const label = new Date(Number(y), Number(m) - 1, 1).toLocaleString("en-GB", {
+          month: "short",
+          year: "2-digit",
+        });
+        return { month, label, spend: v.spend, trips: v.trips };
+      });
+
+    const storeMap = new Map<
+      string,
+      { spend: number; trips: number; last: string | null }
+    >();
+    for (const t of usable) {
+      const store = (t.store_name ?? "Unknown store").trim() || "Unknown store";
+      const cur = storeMap.get(store) ?? { spend: 0, trips: 0, last: null };
+      cur.spend += n(t.receipt_total) ?? 0;
+      cur.trips += 1;
+      const when = iso(t.started_at);
+      if (!cur.last || when > cur.last) cur.last = when;
+      storeMap.set(store, cur);
+    }
+    const stores = [...storeMap.entries()]
+      .map(([store, v]) => ({
+        store,
+        spend: v.spend,
+        trips: v.trips,
+        avgBasket: v.trips ? v.spend / v.trips : 0,
+        lastVisit: v.last,
+      }))
+      .sort((a, b) => b.spend - a.spend);
+
+    const obs = await sql<{
+      product_id: number | null;
+      name: string;
+      store_name: string | null;
+      unit_price: unknown;
+      line_price: unknown;
+      weight_value: unknown;
+      currency: string;
+      observed_at: unknown;
+    }>`
+      select product_id, name, store_name, unit_price, line_price, weight_value, currency, observed_at
+        from price_observations
+       order by observed_at asc
+    `;
+    type Series = { name: string; productId: number | null; currency: string; points: { t: string; u: number }[] };
+    const byProduct = new Map<string, Series>();
+    for (const row of obs) {
+      const unit = perUnitPrice(n(row.unit_price), n(row.line_price), n(row.weight_value), null);
+      if (unit == null) continue;
+      const key = row.product_id ? `p:${row.product_id}` : `n:${catalogKey(row.name)}`;
+      const series = byProduct.get(key) ?? {
+        name: row.name,
+        productId: row.product_id != null ? Number(row.product_id) : null,
+        currency: row.currency,
+        points: [],
+      };
+      series.points.push({ t: iso(row.observed_at), u: unit });
+      byProduct.set(key, series);
+    }
+    const movers = [...byProduct.values()]
+      .filter((s) => s.points.length >= 2)
+      .map((s) => {
+        const from = s.points[0].u;
+        const to = s.points[s.points.length - 1].u;
+        return {
+          productId: s.productId,
+          name: s.name,
+          from,
+          to,
+          changePct: from ? ((to - from) / from) * 100 : 0,
+          currency: s.currency,
+          unit: "/kg",
+        };
+      })
+      .sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct));
+    const risers = movers.filter((m) => m.changePct >= 3).slice(0, 8);
+    const fallers = movers.filter((m) => m.changePct <= -3).slice(0, 8);
+
+    const cheapestMap = new Map<string, StoreUnitPrice>();
+    for (const row of obs) {
+      const unit = perUnitPrice(n(row.unit_price), n(row.line_price), n(row.weight_value), null);
+      if (unit == null) continue;
+      const store = (row.store_name ?? "Unknown").trim() || "Unknown";
+      const key = `${row.product_id ?? catalogKey(row.name)}|${store}`;
+      const next: StoreUnitPrice = {
+        productId: row.product_id != null ? Number(row.product_id) : null,
+        name: row.name,
+        store,
+        unitPrice: unit,
+        currency: row.currency,
+        observedAt: iso(row.observed_at),
+      };
+      const prev = cheapestMap.get(key);
+      if (!prev || iso(row.observed_at) > prev.observedAt) cheapestMap.set(key, next);
+    }
+    const cheapestUnit = [...cheapestMap.values()]
+      .sort((a, b) => a.unitPrice - b.unitPrice)
+      .slice(0, 12);
+
+    return {
+      currency,
+      totalSpend,
+      tripCount,
+      avgBasket,
+      months,
+      stores,
+      risers,
+      fallers,
+      cheapestUnit,
+    };
   },
 );
 

@@ -51,6 +51,8 @@ export type TripItem = {
   matchStatus: MatchStatus;
   matchConfidence: number | null;
   createdAt: string;
+  productId: number | null;
+  productName: string | null;
 };
 
 export type ReceiptCapture = {
@@ -137,6 +139,7 @@ export type CollatedItem = {
 export type CollationResult = {
   storeName: string | null;
   storeLocation: string | null;
+  datetime: string | null;
   subtotal: number | null;
   tax: number | null;
   total: number | null;
@@ -164,6 +167,62 @@ export type ProductMemory = {
   currency: string | null;
   seenCount: number;
   updatedAt: string;
+};
+
+export type CanonicalProduct = {
+  id: number;
+  name: string;
+  brand: string | null;
+  category: string | null;
+  unit: string | null;
+  aliasCount: number;
+  seenCount: number;
+};
+
+export type AnalyticsMonth = {
+  month: string;
+  label: string;
+  spend: number;
+  trips: number;
+};
+
+export type StoreTrend = {
+  store: string;
+  spend: number;
+  trips: number;
+  avgBasket: number;
+  lastVisit: string | null;
+};
+
+export type PriceMover = {
+  productId: number | null;
+  name: string;
+  from: number;
+  to: number;
+  changePct: number;
+  currency: string;
+  unit: string;
+};
+
+export type StoreUnitPrice = {
+  productId: number | null;
+  name: string;
+  store: string;
+  unitPrice: number;
+  currency: string;
+  observedAt: string;
+};
+
+export type GroceryAnalytics = {
+  currency: string;
+  totalSpend: number;
+  tripCount: number;
+  avgBasket: number;
+  months: AnalyticsMonth[];
+  stores: StoreTrend[];
+  risers: PriceMover[];
+  fallers: PriceMover[];
+  cheapestUnit: StoreUnitPrice[];
 };
 
 export type PricePoint = {

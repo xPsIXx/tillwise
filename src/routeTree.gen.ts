@@ -14,6 +14,7 @@ import { Route as ScanRouteImport } from './routes/scan'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ShotsRouteImport } from './routes/shots'
 import { Route as PricesRouteImport } from './routes/prices'
+import { Route as AnalyticsRouteImport } from './routes/analytics'
 import { Route as TripsRouteImport } from './routes/trips'
 import { Route as TripTripIdRouteImport } from './routes/trip.$tripId'
 
@@ -42,6 +43,11 @@ const PricesRoute = PricesRouteImport.update({
   path: '/prices',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AnalyticsRoute = AnalyticsRouteImport.update({
+  id: '/analytics',
+  path: '/analytics',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TripsRoute = TripsRouteImport.update({
   id: '/trips',
   path: '/trips',
@@ -59,6 +65,7 @@ export interface FileRoutesByFullPath {
   '/settings': typeof SettingsRoute
   '/shots': typeof ShotsRoute
   '/prices': typeof PricesRoute
+  '/analytics': typeof AnalyticsRoute
   '/trips': typeof TripsRoute
   '/trip/$tripId': typeof TripTripIdRoute
 }
@@ -68,6 +75,7 @@ export interface FileRoutesByTo {
   '/settings': typeof SettingsRoute
   '/shots': typeof ShotsRoute
   '/prices': typeof PricesRoute
+  '/analytics': typeof AnalyticsRoute
   '/trips': typeof TripsRoute
   '/trip/$tripId': typeof TripTripIdRoute
 }
@@ -78,14 +86,15 @@ export interface FileRoutesById {
   '/settings': typeof SettingsRoute
   '/shots': typeof ShotsRoute
   '/prices': typeof PricesRoute
+  '/analytics': typeof AnalyticsRoute
   '/trips': typeof TripsRoute
   '/trip/$tripId': typeof TripTripIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/scan' | '/settings' | '/shots' | '/prices' | '/trips' | '/trip/$tripId'
+  fullPaths: '/' | '/scan' | '/settings' | '/shots' | '/prices' | '/analytics' | '/trips' | '/trip/$tripId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/scan' | '/settings' | '/shots' | '/prices' | '/trips' | '/trip/$tripId'
+  to: '/' | '/scan' | '/settings' | '/shots' | '/prices' | '/analytics' | '/trips' | '/trip/$tripId'
   id:
     | '__root__'
     | '/'
@@ -93,6 +102,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/shots'
     | '/prices'
+    | '/analytics'
     | '/trips'
     | '/trip/$tripId'
   fileRoutesById: FileRoutesById
@@ -103,6 +113,7 @@ export interface RootRouteChildren {
   SettingsRoute: typeof SettingsRoute
   ShotsRoute: typeof ShotsRoute
   PricesRoute: typeof PricesRoute
+  AnalyticsRoute: typeof AnalyticsRoute
   TripsRoute: typeof TripsRoute
   TripTripIdRoute: typeof TripTripIdRoute
 }
@@ -144,6 +155,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PricesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/analytics': {
+      id: '/analytics'
+      path: '/analytics'
+      fullPath: '/analytics'
+      preLoaderRoute: typeof AnalyticsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/trips': {
       id: '/trips'
       path: '/trips'
@@ -167,6 +185,7 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsRoute: SettingsRoute,
   ShotsRoute: ShotsRoute,
   PricesRoute: PricesRoute,
+  AnalyticsRoute: AnalyticsRoute,
   TripsRoute: TripsRoute,
   TripTripIdRoute: TripTripIdRoute,
 }

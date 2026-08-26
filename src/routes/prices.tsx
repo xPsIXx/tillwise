@@ -53,8 +53,15 @@ function PricesPage() {
                       .join(" · ")}
                   </p>
                 </div>
-                <p className="shrink-0 tabular-nums text-sm">
-                  {money(p.lastLinePrice ?? p.lastUnitPrice, p.currency ?? "AED")}
+                <p className="shrink-0 text-right text-sm">
+                  <span className="block tabular-nums">
+                    {money(p.lastLinePrice ?? p.lastUnitPrice, p.currency ?? "AED")}
+                  </span>
+                  <span className="block text-[11px] text-muted">
+                    {p.lastUnitPrice != null
+                      ? `${money(p.lastUnitPrice, p.currency ?? "AED")} /kg`
+                      : "no unit price"}
+                  </span>
                 </p>
               </button>
             </li>
@@ -88,8 +95,13 @@ function PricesPage() {
                       {tripDay(pt.observedAt)}
                       {pt.storeName ? ` · ${pt.storeName}` : ""}
                     </span>
-                    <span className="tabular-nums">
-                      {money(pt.linePrice ?? pt.unitPrice, pt.currency)}
+                    <span className="text-right tabular-nums">
+                      <span className="block">{money(pt.linePrice ?? pt.unitPrice, pt.currency)}</span>
+                      {pt.unitPrice != null ? (
+                        <span className="block text-[11px] text-muted">
+                          {money(pt.unitPrice, pt.currency)} /{pt.weightUnit || "kg"}
+                        </span>
+                      ) : null}
                     </span>
                   </li>
                 ))}

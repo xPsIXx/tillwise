@@ -1,11 +1,13 @@
 import { Link, useRouterState } from "@tanstack/react-router";
-import { House, Images, ReceiptText, ScanLine, SlidersHorizontal } from "lucide-react";
+import { BarChart3, House, Images, ReceiptText, ScanLine, SlidersHorizontal } from "lucide-react";
+import { PwaInstall } from "@/components/pwa-install";
 import { cn } from "@/lib/utils";
 
 const NAV = [
   { to: "/", label: "Home", icon: House },
   { to: "/scan", label: "Scan", icon: ScanLine },
   { to: "/trips", label: "Trips", icon: ReceiptText },
+  { to: "/analytics", label: "Stats", icon: BarChart3 },
 ] as const;
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -21,6 +23,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <span className="font-display text-lg tracking-tight">Tillwise</span>
           </Link>
           <div className="flex items-center gap-1">
+            <PwaInstall />
             <Link
               to="/shots"
               aria-label="Pictures"
@@ -50,7 +53,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </div>
 
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-bg/90 pb-[env(safe-area-inset-bottom)] backdrop-blur-md">
-          <div className="mx-auto grid max-w-3xl grid-cols-3 px-2 pt-1">
+          <div className="mx-auto grid max-w-3xl grid-cols-4 px-2 pt-1">
             {NAV.map((item) => {
               const active =
                 item.to === "/"

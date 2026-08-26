@@ -400,6 +400,7 @@ function localCollate(
   return {
     storeName: receipt?.storeName ?? null,
     storeLocation: receipt?.storeLocation ?? null,
+    datetime: receipt?.datetime ?? null,
     subtotal: receipt?.subtotal ?? (sum || null),
     tax: receipt?.tax ?? null,
     total: receipt?.total ?? (sum || null),
@@ -430,9 +431,11 @@ Rules:
 - Match abbreviated till names to labels (e.g. "TOM VINE" → "Tomatoes on the Vine"). Group different names that are the same product.
 - Keep receipt-only items that were never photographed.
 - Keep label-only items that did not appear on the till.
+- Group aisle names and till abbreviations onto one canonical product name (TOM VINE and Tomatoes on the Vine are the same).
+- Copy store_name, store_location, and datetime from the receipt header when present.
 - match_status: matched | label_only | receipt_only
 - match_confidence: 0-1 or null
-Return JSON: store_name, store_location, subtotal, tax, total, currency, notes, items[]
+Return JSON: store_name, store_location, datetime, subtotal, tax, total, currency, notes, items[]
 Each item: name, brand, description, barcode, category, quantity, quantity_unit, weight_value, weight_unit, unit_price, line_price, currency, match_status, match_confidence.
 
 LABELS:
@@ -505,6 +508,7 @@ ${JSON.stringify(receipt)}`,
       storeName: str(obj.store_name) ?? str(obj.storeName) ?? fallback.storeName,
       storeLocation:
         str(obj.store_location) ?? str(obj.storeLocation) ?? fallback.storeLocation,
+      datetime: str(obj.datetime) ?? fallback.datetime,
       subtotal: num(obj.subtotal) ?? fallback.subtotal,
       tax: num(obj.tax) ?? fallback.tax,
       total: num(obj.total) ?? fallback.total,

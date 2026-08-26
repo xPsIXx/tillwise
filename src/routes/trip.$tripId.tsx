@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ItemCard } from "@/components/trip/item-card";
+import { ProductMatchSheet } from "@/components/trip/product-match";
 import { ShotGallery } from "@/components/trip/shot-gallery";
 import { ShotSheet } from "@/components/trip/shot-sheet";
 import {
@@ -32,6 +33,7 @@ function TripPage() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<TripItem | null>(null);
   const [store, setStore] = useState<string | null>(null);
+  const [matching, setMatching] = useState<TripItem | null>(null);
   const [openShot, setOpenShot] = useState<ScanShot | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -171,9 +173,9 @@ function TripPage() {
           {money(trip.receiptTotal ?? sum, trip.currency)}
         </p>
       </div>
-      {trip.storeLocation && (
-        <p className="mt-1 text-sm text-muted">{trip.storeLocation}</p>
-      )}
+      <p className="mt-1 text-sm text-muted">
+        {[trip.storeLocation, tripDate(trip.startedAt)].filter(Boolean).join(" · ")}
+      </p>
       {trip.notes && <p className="mt-2 text-sm text-muted">{trip.notes}</p>}
 
       <dl className="mt-5 grid grid-cols-3 gap-2">
@@ -356,6 +358,7 @@ function TripPage() {
                 <ItemCard
                   item={item}
                   currency={trip.currency}
+                  onMatch={setMatching}
                   onEdit={trip.status === "complete" ? undefined : setEditing}
                   onDelete={
                     trip.status === "complete"
@@ -468,6 +471,17 @@ function TripPage() {
             </div>
           </form>
         </div>
+      )}
+      {matching && (
+        <ProductMatchSheet
+          item={matching}
+          onClose={() => setMatching(null)}
+          onSaved={() => {
+            invalidate();
+            void qc.invalidateQueries({ queryKey: ["analytics"] });
+            void qc.invalidateQueries({ queryKey: ["canonical-products"] });
+          }}
+        />
       )}
       {openShot && (
         <ShotSheet

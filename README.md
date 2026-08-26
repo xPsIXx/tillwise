@@ -4,6 +4,8 @@ Camera-first grocery ledger. No accounts.
 
 Point the phone at a produce sticker or a till slip. The photo is filed immediately; name, weight, unit price, line price, and barcode fill in the background. Aisle shots are later collated with the receipt.
 
+v0.3 adds a spending dashboard, store trends, unit-price history, canonical product matching, receipt shop/date fill-in, and an installable PWA. The ledger still uses **PGLite** (Postgres compiled to WASM) on `/data/pglite` — same SQL as Postgres, already wired, better than switching to SQLite mid-flight.
+
 - Repo: https://github.com/xPsIXx/tillwise
 - Image: `ghcr.io/xpsixx/tillwise`
 - Actions: https://github.com/xPsIXx/tillwise/actions
