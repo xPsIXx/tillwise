@@ -12,7 +12,12 @@ WORKDIR /app
 COPY . .
 ENV NITRO_PRESET=node-server
 ENV DATABASE_URL=
-RUN npm run build:ppocr && npm run build
+RUN npm run build:ppocr && npm run build \
+  && mkdir -p .output/server/_libs \
+  && cp -f node_modules/@electric-sql/pglite/dist/pglite.data \
+          node_modules/@electric-sql/pglite/dist/pglite.wasm \
+          node_modules/@electric-sql/pglite/dist/initdb.wasm \
+          .output/server/_libs/
 
 FROM node:22-bookworm-slim AS runner
 WORKDIR /app
