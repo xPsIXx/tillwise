@@ -571,7 +571,7 @@ export const deleteReceiptCapture = createServerFn({ method: "POST" })
 
 export const collateTrip = createServerFn({ method: "POST" })
   .validator((input: { tripId: number; provider?: LlmProvider }) => input)
-  .handler(async ({ data }): Promise<TripDetail> => {
+  .handler(async ({ data }): Promise<TripDetail & { usedLocalCollate: boolean }> => {
     const tripId = data.tripId;
     const provider = data.provider ?? "local";
     const trip = await loadTrip(tripId);
@@ -586,6 +586,9 @@ export const collateTrip = createServerFn({ method: "POST" })
       .filter((x): x is ReceiptExtraction => !!x);
 
     const { stitchReceipts, collateTripData } = await import("./vision");
+    if (items.some((i) => i.matchStatus === "processing")) {
+      throw new Error("Still reading a photo — wait, then collate.");
+    }
     let receipt: ReceiptExtraction | null = null;
     if (portions.length > 0) {
       const stitched = await stitchReceipts(portions, provider);
@@ -596,10 +599,68 @@ export const collateTrip = createServerFn({ method: "POST" })
     if (!collated.ok) throw new Error(collated.error);
 
     const sql = await getSql();
+    const previous = items;
+    const linkedShots = await sql<{ id: number; item_id: number }>`
+      select id, item_id from scan_shots
+       where trip_id = ${tripId} and item_id is not null
+    `;
     await sql`delete from trip_items where trip_id = ${tripId}`;
 
+    const newByName = new Map<string, number>();
+    const newByBarcode = new Map<string, number>();
     for (const item of collated.data.items) {
-      await insertMerged(sql, tripId, item);
+      const id = await insertMerged(sql, tripId, item);
+      newByName.set(item.name.toLowerCase().trim(), id);
+      if (item.barcode) newByBarcode.set(item.barcode, id);
+    }
+
+    const prevById = new Map(previous.map((p) => [p.id, p]));
+    for (const shot of linkedShots) {
+      const old = prevById.get(Number(shot.item_id));
+      if (!old) continue;
+      let nid: number | null = old.barcode ? (newByBarcode.get(old.barcode) ?? null) : null;
+      if (nid == null) {
+        const key = old.name.toLowerCase().trim();
+        nid = newByName.get(key) ?? null;
+        if (nid == null) {
+          for (const [name, id] of newByName) {
+            if (name.includes(key) || key.includes(name)) {
+              nid = id;
+              break;
+            }
+          }
+        }
+      }
+      if (nid != null) {
+        await sql`update scan_shots set item_id = ${nid} where id = ${shot.id}`;
+      }
+    }
+
+    const orphans = await sql<{ id: number; last_read_json: string | null }>`
+      select id, last_read_json from scan_shots
+       where trip_id = ${tripId} and kind = 'label' and item_id is null
+    `;
+    for (const orphan of orphans) {
+      let name = "";
+      try {
+        const last = orphan.last_read_json ? JSON.parse(orphan.last_read_json) : null;
+        name = typeof last?.name === "string" ? last.name.toLowerCase().trim() : "";
+      } catch {
+        name = "";
+      }
+      if (!name) continue;
+      let nid = newByName.get(name) ?? null;
+      if (nid == null) {
+        for (const [n, id] of newByName) {
+          if (n.includes(name) || name.includes(n)) {
+            nid = id;
+            break;
+          }
+        }
+      }
+      if (nid != null) {
+        await sql`update scan_shots set item_id = ${nid} where id = ${orphan.id}`;
+      }
     }
 
     await sql`
@@ -622,6 +683,7 @@ export const collateTrip = createServerFn({ method: "POST" })
       items: await loadItems(tripId),
       receipts: await loadReceipts(tripId),
       shots: await loadShots(tripId),
+      usedLocalCollate: collated.usedLocalCollate,
     };
   });
 
@@ -629,8 +691,8 @@ async function insertMerged(
   sql: Awaited<ReturnType<typeof getSql>>,
   tripId: number,
   item: CollatedItem,
-) {
-  await sql`
+): Promise<number> {
+  const rows = await sql<{ id: number }>`
     insert into trip_items (
       user_id, trip_id, source, name, brand, description, barcode, category,
       quantity, quantity_unit, weight_value, weight_unit, unit_price, line_price,
@@ -641,7 +703,9 @@ async function insertMerged(
       ${item.weightValue}, ${item.weightUnit}, ${item.unitPrice}, ${item.linePrice},
       ${item.currency}, ${item.thumbnailData}, ${item.matchStatus}, ${item.matchConfidence}
     )
+    returning id
   `;
+  return Number(rows[0]?.id ?? 0);
 }
 
 export const addScanShot = createServerFn({ method: "POST" })

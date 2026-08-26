@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +13,7 @@ export const Route = createFileRoute("/")({ component: Home });
 
 function Home() {
   const navigate = useNavigate();
+  const qc = useQueryClient();
   const [store, setStore] = useState("");
   const tripsQuery = useQuery({
     queryKey: ["trips"],
@@ -21,6 +22,11 @@ function Home() {
   const start = useMutation({
     mutationFn: () => createTrip({ data: { storeName: store.trim() || undefined } }),
     onSuccess: (trip) => {
+      qc.setQueryData(["trips"], (old: unknown) => {
+        const list = Array.isArray(old) ? old : [];
+        return [trip, ...list.filter((t: { id: number }) => t.id !== trip.id)];
+      });
+      void qc.invalidateQueries({ queryKey: ["trips"] });
       void navigate({ to: "/scan", search: { tripId: trip.id, mode: "label" } });
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not start trip"),

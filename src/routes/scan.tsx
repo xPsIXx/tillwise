@@ -37,11 +37,16 @@ function ScanPage() {
   const start = useMutation({
     mutationFn: () => createTrip({ data: {} }),
     onSuccess: (trip) => {
+      qc.setQueryData(["trips"], (old: unknown) => {
+        const list = Array.isArray(old) ? old : [];
+        return [trip, ...list.filter((t: { id: number }) => t.id !== trip.id)];
+      });
+      void qc.invalidateQueries({ queryKey: ["trips"] });
       void navigate({ to: "/scan", search: { tripId: trip.id, mode: "label" } });
     },
   });
 
-  if (tripsQuery.isLoading) {
+  if (tripsQuery.isLoading && !tripId) {
     return (
       <div className="py-16">
         <Skeleton className="h-64 w-full" />
@@ -52,8 +57,9 @@ function ScanPage() {
   const active =
     (tripId ? tripsQuery.data?.find((t) => t.id === tripId) : undefined) ??
     tripsQuery.data?.find((t) => t.status !== "complete");
+  const activeId = active?.id ?? tripId;
 
-  if (!active) {
+  if (!activeId) {
     return (
       <main className="py-16 text-center">
         <h1 className="font-display text-3xl">Start a trip first</h1>
@@ -71,21 +77,21 @@ function ScanPage() {
 
   return (
     <CameraView
-      tripId={active.id}
+      tripId={activeId}
       mode={scanMode}
       onMode={(next) => {
         void navigate({
           to: "/scan",
-          search: { tripId: active.id, mode: next },
+          search: { tripId: activeId, mode: next },
           replace: true,
         });
       }}
       onClose={() => {
-        void navigate({ to: "/trip/$tripId", params: { tripId: String(active.id) } });
+        void navigate({ to: "/trip/$tripId", params: { tripId: String(activeId) } });
       }}
       onSaved={() => {
         void qc.invalidateQueries({ queryKey: ["trips"] });
-        void qc.invalidateQueries({ queryKey: ["trip", active.id] });
+        void qc.invalidateQueries({ queryKey: ["trip", activeId] });
       }}
     />
   );

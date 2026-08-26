@@ -252,10 +252,37 @@ Return JSON with the same shape: store_name, store_location, datetime, is_partia
 PORTIONS:
 ${JSON.stringify(portions, null, 2)}`,
   });
-  if (!result.ok) return result;
+  if (!result.ok) return { ok: true, data: mergePortionsLocally(portions) };
   const obj = parseJson(result.text);
-  if (!obj) return { ok: false, error: "Could not stitch the receipt." };
+  if (!obj) return { ok: true, data: mergePortionsLocally(portions) };
   return { ok: true, data: asReceipt(obj) };
+}
+
+function mergePortionsLocally(portions: ReceiptExtraction[]): ReceiptExtraction {
+  const seen = new Set<string>();
+  const items: ReceiptLine[] = [];
+  for (const p of portions) {
+    for (const line of p.items) {
+      const key = `${line.name}|${line.linePrice ?? ""}|${line.weightValue ?? ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push(line);
+    }
+  }
+  const last = [...portions].reverse().find((p) => p.total != null) ?? portions[portions.length - 1];
+  return {
+    storeName: portions.find((p) => p.storeName)?.storeName ?? null,
+    storeLocation: portions.find((p) => p.storeLocation)?.storeLocation ?? null,
+    datetime: portions.find((p) => p.datetime)?.datetime ?? null,
+    isPartial: portions.some((p) => p.isPartial),
+    portionHint: portions.length > 1 ? "full" : (last?.portionHint ?? null),
+    items,
+    subtotal: last?.subtotal ?? null,
+    tax: last?.tax ?? null,
+    total: last?.total ?? null,
+    currency: last?.currency ?? "AED",
+    rawText: portions.map((p) => p.rawText).filter(Boolean).join("\n"),
+  };
 }
 
 function localCollate(
@@ -271,10 +298,19 @@ function localCollate(
       .replace(/[^a-z0-9]+/g, " ")
       .trim();
 
+  const STOP = new Set(["the", "and", "for", "with", "from"]);
+  const tokens = (s: string) =>
+    s
+      .split(" ")
+      .filter((w) => w.length > 2 && !STOP.has(w));
+
+  const tokenHit = (a: string, b: string) =>
+    a === b || (a.length >= 3 && b.length >= 3 && (a.startsWith(b) || b.startsWith(a)));
+
   for (const label of labels) {
     let best = -1;
     let bestScore = 0;
-    const ln = norm(label.name);
+    const ln = norm([label.brand, label.name].filter(Boolean).join(" "));
     const receiptItems = receipt?.items ?? [];
     receiptItems.forEach((line, i) => {
       if (usedReceipt.has(i)) return;
@@ -284,14 +320,21 @@ function localCollate(
       if (ln === rn) score = 1;
       else if (ln.includes(rn) || rn.includes(ln)) score = 0.82;
       else {
-        const lt = new Set(ln.split(" ").filter((w) => w.length > 2));
-        const rt = new Set(rn.split(" ").filter((w) => w.length > 2));
+        const lt = tokens(ln);
+        const rt = tokens(rn);
         let hit = 0;
         lt.forEach((w) => {
-          if (rt.has(w)) hit += 1;
+          if (rt.some((x) => tokenHit(w, x))) hit += 1;
         });
         const union = new Set([...lt, ...rt]).size || 1;
         score = hit / union;
+        if (
+          label.weightValue != null &&
+          line.weightValue != null &&
+          Math.abs(label.weightValue - line.weightValue) < 0.02
+        ) {
+          score += 0.12;
+        }
       }
       if (score > bestScore) {
         bestScore = score;
@@ -359,7 +402,9 @@ export async function collateTripData(
   labels: TripItem[],
   receipt: ReceiptExtraction | null,
   provider?: LlmProvider,
-): Promise<{ ok: true; data: CollationResult } | { ok: false; error: string }> {
+): Promise<
+  { ok: true; data: CollationResult; usedLocalCollate: boolean } | { ok: false; error: string }
+> {
   const fallback = localCollate(labels, receipt);
   const useProvider = provider ?? "local";
 
@@ -401,9 +446,9 @@ RECEIPT:
 ${JSON.stringify(receipt)}`,
   });
 
-  if (!result.ok) return { ok: true, data: fallback };
+  if (!result.ok) return { ok: true, data: fallback, usedLocalCollate: true };
   const obj = parseJson(result.text);
-  if (!obj) return { ok: true, data: fallback };
+  if (!obj) return { ok: true, data: fallback, usedLocalCollate: true };
 
   const rawItems = Array.isArray(obj.items) ? obj.items : [];
   const items: CollatedItem[] = rawItems
@@ -440,10 +485,11 @@ ${JSON.stringify(receipt)}`,
       };
     });
 
-  if (items.length === 0) return { ok: true, data: fallback };
+  if (items.length === 0) return { ok: true, data: fallback, usedLocalCollate: true };
 
   return {
     ok: true,
+    usedLocalCollate: false,
     data: {
       storeName: str(obj.store_name) ?? str(obj.storeName) ?? fallback.storeName,
       storeLocation:

@@ -32,6 +32,7 @@ function TripPage() {
   const [editing, setEditing] = useState<TripItem | null>(null);
   const [store, setStore] = useState<string | null>(null);
   const [openShot, setOpenShot] = useState<ScanShot | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const detailQuery = useQuery({
     queryKey: ["trip", tripId],
@@ -46,8 +47,12 @@ function TripPage() {
 
   const collate = useMutation({
     mutationFn: () => collateTrip({ data: { tripId, provider: loadScanSettings().collate } }),
-    onSuccess: () => {
-      toast.success("Trip collated");
+    onSuccess: (res) => {
+      toast.success(
+        res.usedLocalCollate
+          ? "Collated on this device — the text model was unavailable."
+          : "Trip collated",
+      );
       invalidate();
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not collate"),
@@ -135,9 +140,11 @@ function TripPage() {
   const photos = shots ?? [];
   const storeValue = store ?? trip.storeName ?? "";
   const sum = items.reduce((acc, it) => acc + (it.linePrice ?? 0), 0);
-  const labels = items.filter((i) => i.source === "label" && i.matchStatus !== "processing");
   const merged = items.filter((i) => i.source === "merged");
   const visible = merged.length ? merged : items;
+  const processing = items.some((i) => i.matchStatus === "processing");
+  const canCollate = !processing && (visible.length > 0 || receipts.length > 0);
+  const canFile = !processing && (visible.length > 0 || receipts.length > 0);
 
   return (
     <main className="pb-10 pt-6">
@@ -166,6 +173,7 @@ function TripPage() {
       {trip.storeLocation && (
         <p className="mt-1 text-sm text-muted">{trip.storeLocation}</p>
       )}
+      {trip.notes && <p className="mt-2 text-sm text-muted">{trip.notes}</p>}
 
       <dl className="mt-5 grid grid-cols-3 gap-2">
         <Mini label="Subtotal" value={money(trip.receiptSubtotal ?? sum, trip.currency)} />
@@ -188,20 +196,31 @@ function TripPage() {
             </Button>
             <Button
               variant="accent"
-              disabled={collate.isPending || (labels.length === 0 && receipts.length === 0)}
+              disabled={collate.isPending || !canCollate}
               onClick={() => collate.mutate()}
             >
               {collate.isPending ? "Collating…" : "Collate trip"}
             </Button>
-            {trip.status === "review" && (
+            {canFile && (
               <Button variant="primary" onClick={() => finish.mutate()} disabled={finish.isPending}>
                 {finish.isPending ? "Filing…" : "File trip"}
               </Button>
             )}
           </>
         )}
-        <Button variant="ghost" className="text-muted" onClick={() => removeTrip.mutate()}>
-          Delete
+        <Button
+          variant="ghost"
+          className={confirmDelete ? "text-fg" : "text-muted"}
+          onClick={() => {
+            if (!confirmDelete) {
+              setConfirmDelete(true);
+              window.setTimeout(() => setConfirmDelete(false), 4000);
+              return;
+            }
+            removeTrip.mutate();
+          }}
+        >
+          {confirmDelete ? "Delete this trip?" : "Delete"}
         </Button>
       </div>
 
@@ -292,12 +311,12 @@ function TripPage() {
                       : (it) => removeItem.mutate(it.id)
                   }
                   onReprocess={
-                    trip.status === "complete"
+                    trip.status === "complete" ||
+                    !photos.some((s) => s.itemId === item.id)
                       ? undefined
                       : (it) => {
                           const shot = photos.find((s) => s.itemId === it.id);
                           if (shot) setOpenShot(shot);
-                          else toast.error("No original photo for this line — scan it again.");
                         }
                   }
                 />
@@ -308,9 +327,13 @@ function TripPage() {
       </section>
 
       {editing && (
-        <div className="fixed inset-0 z-40 grid place-items-end bg-bg/50 p-4 sm:place-items-center">
+        <div
+          className="fixed inset-0 z-40 grid place-items-end bg-bg/50 p-4 sm:place-items-center"
+          onClick={() => setEditing(null)}
+        >
           <form
             className="w-full max-w-md rounded-2xl bg-surface p-5 shadow-[var(--shadow-border)]"
+            onClick={(e) => e.stopPropagation()}
             onSubmit={(e) => {
               e.preventDefault();
               saveItem.mutate(editing);

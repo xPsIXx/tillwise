@@ -1,5 +1,5 @@
 import { Link, useRouterState } from "@tanstack/react-router";
-import { House, ReceiptText, ScanLine, SlidersHorizontal } from "lucide-react";
+import { House, Images, ReceiptText, ScanLine, SlidersHorizontal } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV = [
@@ -22,23 +22,35 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </span>
             <span className="font-display text-lg tracking-tight">Tillwise</span>
           </Link>
-          <Link
-            to="/settings"
-            aria-label="Settings"
-            className={cn(
-              "grid size-11 place-items-center rounded-lg text-muted hover:bg-elevated hover:text-fg",
-              pathname.startsWith("/settings") && "text-fg",
-            )}
-          >
-            <SlidersHorizontal className="size-5" />
-          </Link>
+          <div className="flex items-center gap-1">
+            <Link
+              to="/shots"
+              aria-label="Pictures"
+              className={cn(
+                "grid size-11 place-items-center rounded-lg text-muted hover:bg-elevated hover:text-fg",
+                pathname.startsWith("/shots") && "text-fg",
+              )}
+            >
+              <Images className="size-5" />
+            </Link>
+            <Link
+              to="/settings"
+              aria-label="Settings"
+              className={cn(
+                "grid size-11 place-items-center rounded-lg text-muted hover:bg-elevated hover:text-fg",
+                pathname.startsWith("/settings") && "text-fg",
+              )}
+            >
+              <SlidersHorizontal className="size-5" />
+            </Link>
+          </div>
         </div>
       </header>
 
       <div
         className={cn(
           "mx-auto w-full max-w-3xl px-4",
-          hideNav ? "pb-6" : "pb-[calc(5.5rem+env(safe-area-inset-bottom))]",
+          hideNav ? "pb-0" : "pb-[calc(5.5rem+env(safe-area-inset-bottom))]",
         )}
       >
         {children}

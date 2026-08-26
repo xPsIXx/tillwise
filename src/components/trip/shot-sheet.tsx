@@ -29,7 +29,7 @@ export function ShotSheet({
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [image, setImage] = useState<string | null>(shot.thumbnailData);
-  const [busy, setBusy] = useState<"load" | "read" | "save" | null>("load");
+  const [busy, setBusy] = useState<"read" | "save" | null>(null);
   const [read, setRead] = useState<ReadMode>(() => {
     const cur = loadScanSettings().read;
     if (shot.kind === "receipt") return cur === "grok" ? "grok" : "local";
@@ -39,21 +39,25 @@ export function ShotSheet({
 
   useEffect(() => {
     let cancelled = false;
-    setBusy("load");
     void getShotImage({ data: shot.id })
       .then((res) => {
         if (!cancelled) setImage(res.image);
       })
       .catch(() => {
         if (!cancelled) toast.error("Could not load the original photo");
-      })
-      .finally(() => {
-        if (!cancelled) setBusy(null);
       });
     return () => {
       cancelled = true;
     };
   }, [shot.id]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   async function reprocess() {
     if (!image) return;
@@ -165,8 +169,14 @@ export function ShotSheet({
   const engines = shot.kind === "receipt" ? READ_OPTIONS.filter((o) => o.id === "local" || o.id === "grok") : READ_OPTIONS;
 
   return (
-    <div className="fixed inset-0 z-40 grid place-items-end bg-bg/55 p-0 sm:place-items-center sm:p-4">
-      <div className="flex max-h-[92dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-surface shadow-[var(--shadow-border)] sm:rounded-2xl">
+    <div
+      className="fixed inset-0 z-40 grid place-items-end bg-bg/55 p-0 sm:place-items-center sm:p-4"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[92dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-surface shadow-[var(--shadow-border)] sm:rounded-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between gap-3 px-4 py-3">
           <div>
             <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted">

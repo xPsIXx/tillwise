@@ -34,6 +34,7 @@ import {
   addLabelItem,
   addReceiptCapture,
   addScanShot,
+  getLlmConfig,
   scanLabelPhoto,
   scanReceiptPhoto,
   updateItem,
@@ -247,6 +248,7 @@ export function CameraView({
   const [pending, setPending] = useState<Pending | null>(null);
   const [saving, setSaving] = useState(false);
   const [engine, setEngine] = useState<EngineProgress | null>(null);
+  const [readerWarn, setReaderWarn] = useState<string | null>(null);
 
   const start = useCallback(async (fresh = false) => {
     setCamera((c) => (c === "live" && !fresh ? c : "starting"));
@@ -292,6 +294,30 @@ export function CameraView({
       releaseCameraSoon();
     };
   }, [start]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getLlmConfig().then((llm) => {
+      if (cancelled) return;
+      const cfg = loadScanSettings();
+      if (cfg.read === "local" && !llm.localAvailable) {
+        setReaderWarn(
+          "Local vision isn’t set. Live reads will fail — use PP-OCR, or add LLM_BASE_URL in Settings.",
+        );
+      } else if (cfg.read === "grok" && !llm.grokAvailable) {
+        setReaderWarn("Grok isn’t available on this server. Pick PP-OCR or a local model in Settings.");
+      } else if (mode === "receipt" && !llm.localAvailable && !llm.grokAvailable) {
+        setReaderWarn(
+          "Till tape still needs a vision model. Labels can use PP-OCR on this phone — add LLM_BASE_URL in Settings for receipts.",
+        );
+      } else {
+        setReaderWarn(null);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [mode]);
 
   useEffect(() => {
     if (camera !== "live") return;
@@ -826,8 +852,8 @@ export function CameraView({
   const inflight = jobs.filter((j) => j.status === "queued" || j.status === "reading");
 
   return (
-    <div className="relative -mx-4 flex min-h-[calc(100dvh-5rem)] flex-col bg-bg">
-      <div className="relative min-h-[55dvh] flex-1 overflow-hidden bg-black">
+    <div className="relative -mx-4 flex h-[calc(100svh-4.25rem)] flex-col overflow-hidden bg-bg">
+      <div className="relative min-h-0 flex-1 overflow-hidden bg-black">
         <video
           ref={videoRef}
           className="absolute inset-0 size-full object-cover"
@@ -951,6 +977,20 @@ export function CameraView({
           </div>
         )}
 
+        {readerWarn && (
+          <p
+            className={cn(
+              "absolute inset-x-4 z-20 rounded-xl bg-surface/95 px-3 py-2 text-center text-xs leading-5 text-fg shadow-[var(--shadow-border)]",
+              engine && engine.pct < 100 ? "top-24" : "top-[4.75rem]",
+            )}
+          >
+            {readerWarn}{" "}
+            <Link to="/settings" className="font-medium underline underline-offset-2">
+              Open settings
+            </Link>
+          </p>
+        )}
+
         {jobs.length > 0 && (
           <ul className="absolute inset-x-0 bottom-3 flex justify-center gap-2 px-4">
             {jobs.slice(-6).map((j) => (
@@ -970,7 +1010,7 @@ export function CameraView({
         )}
       </div>
 
-      <div className="border-t border-border bg-bg px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
+      <div className="shrink-0 border-t border-border bg-bg px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
         <div className="mb-3 grid grid-cols-2 rounded-xl bg-elevated p-1">
           {(["label", "receipt"] as const).map((m) => (
             <button
