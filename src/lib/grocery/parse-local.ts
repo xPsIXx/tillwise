@@ -46,7 +46,12 @@ function num(raw: string | undefined): number | null {
 export function extractBarcode(raw: string, given: string | null): string | null {
   const hint = given?.replace(/\D/g, "") ?? "";
   if (hint.length >= 8 && hint.length <= 14) return hint;
-  const runs = raw.match(/\d[\d\s-]{6,20}\d/g) ?? [];
+  for (const line of raw.split(/\r?\n/)) {
+    const digits = line.replace(/\D/g, "");
+    if (digits.length >= 8 && digits.length <= 14) return digits;
+  }
+  // Do not let "14.95" glue onto the barcode line through the decimal point.
+  const runs = raw.match(/(?<![.\d])\d[\d\s-]{6,16}\d(?![.\d])/g) ?? [];
   for (const run of runs) {
     const digits = run.replace(/\D/g, "");
     if (digits.length >= 8 && digits.length <= 14) return digits;
@@ -90,25 +95,60 @@ function parseUnitPrice(raw: string): UnitHit | null {
 
 function moneyAmounts(raw: string): number[] {
   const out: number[] = [];
-  const re =
+  const push = (n: number | null) => {
+    if (n != null && n > 0 && !out.some((x) => Math.abs(x - n) < 0.001)) out.push(n);
+  };
+  const labeled =
     /(?:AED|Dhs?|USD|£|\$|د\.?إ)\s*(\d+(?:[.,]\d+)?)|(\d+(?:[.,]\d+)?)\s*(?:AED|Dhs?)/gi;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(raw))) {
-    const n = num(m[1] ?? m[2]);
-    if (n != null && n > 0 && !out.includes(n)) out.push(n);
+  while ((m = labeled.exec(raw))) push(num(m[1] ?? m[2]));
+  // Scale stickers (Lulu, Carrefour, …) print bare 12.50 next to UNIT PRICE / TOTAL.
+  const bare = /(?<!\d)(\d{1,4}[.,]\d{2})(?!\d)/g;
+  while ((m = bare.exec(raw))) {
+    const n = num(m[1]);
+    // Weights like 0.62 can look like money; keep only plausible prices.
+    if (n != null && n >= 0.2) push(n);
   }
   return out;
 }
 
+function labeledNumber(raw: string, labels: RegExp): number | null {
+  const m = raw.match(labels);
+  return m ? num(m[1]) : null;
+}
+
 function parseLinePrice(raw: string, unitPrice: number | null): number | null {
-  const labeled = raw.match(
-    /(?:total|net|amount)\s*(?:AED|Dhs?|USD|£|\$|د\.?إ)?\s*(\d+(?:[.,]\d+)?)/i,
+  const labeled = labeledNumber(
+    raw,
+    /(?:total|net|amount|line)\s*(?:price)?\s*(?:AED|Dhs?|USD|£|\$|د\.?إ)?\s*(\d+(?:[.,]\d+)?)/i,
   );
-  if (labeled) return num(labeled[1]);
+  if (labeled != null) return labeled;
   const amounts = moneyAmounts(raw);
   const rest = unitPrice != null ? amounts.filter((n) => Math.abs(n - unitPrice) > 0.009) : amounts;
   if (rest.length) return rest[rest.length - 1];
   return amounts.length === 1 ? amounts[0] : null;
+}
+
+/** If weight × one price ≈ the other price, that pair is unit + line. */
+function pairByWeight(
+  weightValue: number | null,
+  weightUnit: string | null,
+  amounts: number[],
+): { unitPrice: number; linePrice: number } | null {
+  if (weightValue == null || weightValue <= 0 || amounts.length < 2) return null;
+  const kg =
+    (weightUnit ?? "kg").toLowerCase() === "g" ? weightValue / 1000 : weightValue;
+  if (kg <= 0) return null;
+  for (let i = 0; i < amounts.length; i += 1) {
+    for (let j = 0; j < amounts.length; j += 1) {
+      if (i === j) continue;
+      const expected = roundMoney(amounts[i] * kg);
+      if (Math.abs(expected - amounts[j]) <= Math.max(0.03, amounts[j] * 0.02)) {
+        return { unitPrice: amounts[i], linePrice: amounts[j] };
+      }
+    }
+  }
+  return null;
 }
 
 function perKgFromLine(
@@ -131,9 +171,13 @@ function roundMoney(n: number): number {
 }
 
 export function parseLabelText(raw: string, barcode: string | null): LabelExtraction {
+  const flat = raw.replace(/[\r\n]+/g, " ");
   const weight =
-    raw.match(/(\d+(?:[.,]\d+)?)\s*(kg|g|lb|oz|ml|l)\b/i) ??
-    raw.match(/\b(kg|g)\s*(\d+(?:[.,]\d+)?)/i);
+    flat.match(
+      /(?:weight|wt|net|الوزن)\s*(?:kg|g)?\s*(\d+(?:[.,]\d+)?)\s*(kg|g|lb|oz)?/i,
+    ) ??
+    flat.match(/(\d+(?:[.,]\d+)?)\s*(kg|g|lb|oz|ml|l)\b/i) ??
+    flat.match(/\b(kg|g)\s*(\d+(?:[.,]\d+)?)/i);
   let weightValue: number | null = null;
   let weightUnit: string | null = null;
   if (weight) {
@@ -144,21 +188,40 @@ export function parseLabelText(raw: string, barcode: string | null): LabelExtrac
       weightUnit = a.toLowerCase();
     } else {
       weightValue = num(a);
-      weightUnit = b.toLowerCase();
+      weightUnit = (b ?? "kg").toLowerCase();
     }
   }
 
-  const unitHit = parseUnitPrice(raw);
-  let unitPrice = unitHit?.price ?? null;
-  let linePrice = parseLinePrice(raw, unitPrice);
+  const labeledUnit = labeledNumber(
+    flat,
+    /(?:unit\s*price|سعر\s*الوحدة|u\.?\s*p\.?)\s*(?:AED|Dhs?)?\s*(\d+(?:[.,]\d+)?)/i,
+  );
+  const unitHit = parseUnitPrice(flat);
+  let unitPrice = labeledUnit ?? unitHit?.price ?? null;
+  let linePrice = parseLinePrice(flat, unitPrice);
+
+  const paired = pairByWeight(weightValue, weightUnit, moneyAmounts(flat));
+  if (paired) {
+    if (unitPrice == null) unitPrice = paired.unitPrice;
+    if (linePrice == null || Math.abs(linePrice - unitPrice) < 0.001) {
+      linePrice = paired.linePrice;
+    }
+    // Prefer the pair that matches the scale math when labels were ambiguous.
+    if (Math.abs(paired.unitPrice - (unitPrice ?? 0)) > 0.05 && labeledUnit == null) {
+      unitPrice = paired.unitPrice;
+      linePrice = paired.linePrice;
+    }
+  }
 
   if (linePrice != null && unitPrice != null && Math.abs(linePrice - unitPrice) < 0.001) {
     const computed = perKgFromLine(linePrice, weightValue, weightUnit);
     if (computed && Math.abs(computed - unitPrice) > 0.05) {
-      // The lone "AED 4.25" was probably the unit rate, not the line total.
-      if (weightValue != null && weightValue !== 1) linePrice = roundMoney(unitPrice * (
-        (weightUnit ?? "").toLowerCase() === "g" ? weightValue / 1000 : weightValue
-      ));
+      if (weightValue != null && weightValue !== 1) {
+        linePrice = roundMoney(
+          unitPrice *
+            ((weightUnit ?? "").toLowerCase() === "g" ? weightValue / 1000 : weightValue),
+        );
+      }
     }
   }
 
@@ -173,15 +236,21 @@ export function parseLabelText(raw: string, barcode: string | null): LabelExtrac
     .map((l) => l.trim())
     .filter((l) => l.length > 1);
   const skip =
-    /^(AED|Dhs?|kg|g|oz|lb|total|qty|plu|org|organic|net|wt|weight|price|unit)$/i;
+    /^(AED|Dhs?|kg|g|oz|lb|total|qty|plu|org|organic|net|wt|weight|price|unit|lulu|carrefour|spinneys|waitrose|لو.?لو)$/i;
+  const fieldish =
+    /weight|unit\s*price|expiry|prod|packed|barcode|الوزن|سعر|تاريخ|الوحدة/i;
+  const nameCandidates = lines.filter(
+    (l) =>
+      !skip.test(l) &&
+      !fieldish.test(l) &&
+      !/^\d+([.,]\d+)?(kg|g)?$/i.test(l) &&
+      !/\d{8,}/.test(l.replace(/\s/g, "")) &&
+      l.length > 2,
+  );
   const nameLine =
-    lines.find(
-      (l) =>
-        !skip.test(l) &&
-        !/^\d+([.,]\d+)?$/.test(l) &&
-        !/\d{8,}/.test(l.replace(/\s/g, "")) &&
-        l.length > 2,
-    ) ?? (foundBarcode ? `Item ${foundBarcode}` : "Unknown item");
+    nameCandidates.find((l) => /[A-Za-z]{3,}/.test(l)) ??
+    nameCandidates[0] ??
+    (foundBarcode ? `Item ${foundBarcode}` : "Unknown item");
 
   return {
     name: nameLine.slice(0, 80),

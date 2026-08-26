@@ -198,9 +198,11 @@ export async function readLabelImage(
     prompt: `This is a photo of a grocery product: a produce scale sticker, packaged-goods label, shelf tag, or barcode.
 Extract what is actually printed. Prefer the scale sticker when both a bag and a sticker are visible.
 ${hint}
+GCC scale stickers (Lulu, Carrefour, Spinneys) are a grid:
+WEIGHT / الوزن = net kg; UNIT PRICE / سعر الوحدة = per-kg rate even when "/kg" is not printed; large number bottom-right = amount payable (weight × unit). Barcode digits sit along the bottom.
 Produce stickers usually show THREE numbers: net weight, unit price (per kg / per lb / per 100g), and line total.
 - unit_price = the rate (AED/kg, $/lb, price per 100g converted to per kg by ×10). Not the total.
-- line_price = the amount charged for this pack (TOTAL / NET / the larger money amount).
+- line_price = the amount charged for this pack (TOTAL / NET / bottom-right money).
 - barcode = the digits under the barcode or EAN/UPC printed on the sticker (8–14 digits, no spaces). Do not invent one.
 If only one money amount is printed next to /kg or PER KG, that is unit_price. If weight and total are present, you may compute unit_price = total / weight_in_kg.
 Return JSON with keys:
