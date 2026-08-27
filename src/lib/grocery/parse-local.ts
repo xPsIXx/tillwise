@@ -170,25 +170,138 @@ function roundMoney(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+type ScaleCluster = {
+  weightValue: number;
+  weightUnit: string;
+  unitPrice: number;
+  linePrice: number;
+  at: number;
+};
+
+function findWeights(raw: string): { value: number; unit: string; at: number }[] {
+  const out: { value: number; unit: string; at: number }[] = [];
+  const re =
+    /(?:weight|wt|net|الوزن)?\s*(\d+(?:[.,]\d+)?)\s*(kg|g|lb|oz)\b|\b(kg|g)\s*(\d+(?:[.,]\d+)?)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(raw))) {
+    if (m[3] && m[4]) {
+      const value = num(m[4]);
+      if (value != null && value > 0 && value < 50) {
+        out.push({ value, unit: m[3].toLowerCase(), at: m.index });
+      }
+    } else {
+      const value = num(m[1]);
+      if (value != null && value > 0 && value < 50) {
+        out.push({ value, unit: (m[2] ?? "kg").toLowerCase(), at: m.index });
+      }
+    }
+  }
+  return out;
+}
+
+function pickScaleCluster(raw: string): ScaleCluster | null {
+  const weights = findWeights(raw);
+  const amounts = moneyAmounts(raw);
+  const clusters: ScaleCluster[] = [];
+  for (const w of weights) {
+    const kg = w.unit === "g" ? w.value / 1000 : w.value;
+    if (kg <= 0) continue;
+    for (let i = 0; i < amounts.length; i += 1) {
+      for (let j = 0; j < amounts.length; j += 1) {
+        if (i === j) continue;
+        const expected = roundMoney(amounts[i] * kg);
+        if (Math.abs(expected - amounts[j]) <= Math.max(0.04, amounts[j] * 0.025)) {
+          clusters.push({
+            weightValue: w.value,
+            weightUnit: w.unit,
+            unitPrice: amounts[i],
+            linePrice: amounts[j],
+            at: w.at,
+          });
+        }
+      }
+    }
+  }
+  if (!clusters.length) return null;
+  const nameHits: number[] = [];
+  const nameRe = /\b[A-Z][a-z]{3,}\b/g;
+  let nm: RegExpExecArray | null;
+  while ((nm = nameRe.exec(raw))) nameHits.push(nm.index);
+  const scored = clusters.map((c) => {
+    const nearName = nameHits.length
+      ? Math.min(...nameHits.map((i) => Math.abs(i - c.at)))
+      : 10_000;
+    return { c, nearName };
+  });
+  scored.sort((a, b) => a.nearName - b.nearName || b.c.linePrice - a.c.linePrice);
+  return scored[0].c;
+}
+
+function pickProductName(raw: string, foundBarcode: string | null): string {
+  const junk =
+    /weight|unit\s*price|expiry|prod|packed|barcode|scale|total|amount|lulu|carrefour|spinneys|waitrose|olaglle|jgl|الوزن|سعر|تاريخ|الوحدة|قرنبيط/i;
+  const tokens = raw
+    .split(/[\r\n]+|(?<=[a-z])(?=[A-Z])/)
+    .flatMap((line) => line.split(/[^A-Za-z]+/))
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 4);
+  const words = tokens.filter(
+    (t) =>
+      /[aeiouy]/i.test(t) &&
+      /[A-Za-z]{4,}/.test(t) &&
+      !junk.test(t) &&
+      !/^\d/.test(t),
+  );
+  const titled = words.find((t) => /^[A-Z][a-z]{3,}$/.test(t));
+  if (titled) return titled;
+  if (words[0]) return words[0][0].toUpperCase() + words[0].slice(1).toLowerCase();
+  const lines = raw
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 2);
+  const skip =
+    /^(AED|Dhs?|kg|g|oz|lb|total|qty|plu|org|organic|net|wt|weight|price|unit|lulu|carrefour|spinneys|waitrose|لو.?لو)$/i;
+  const fieldish =
+    /weight|unit\s*price|expiry|prod|packed|barcode|الوزن|سعر|تاريخ|الوحدة/i;
+  const nameCandidates = lines.filter(
+    (l) =>
+      !skip.test(l) &&
+      !fieldish.test(l) &&
+      !/^\d+([.,]\d+)?(kg|g)?$/i.test(l) &&
+      !/\d{8,}/.test(l.replace(/\s/g, "")) &&
+      /[aeiouy]/i.test(l) &&
+      l.length > 3,
+  );
+  return (
+    nameCandidates.find((l) => /[A-Za-z]{4,}/.test(l)) ??
+    nameCandidates[0] ??
+    (foundBarcode ? `Item ${foundBarcode}` : "Unknown item")
+  );
+}
+
 export function parseLabelText(raw: string, barcode: string | null): LabelExtraction {
   const flat = raw.replace(/[\r\n]+/g, " ");
-  const weight =
-    flat.match(
-      /(?:weight|wt|net|الوزن)\s*(?:kg|g)?\s*(\d+(?:[.,]\d+)?)\s*(kg|g|lb|oz)?/i,
-    ) ??
-    flat.match(/(\d+(?:[.,]\d+)?)\s*(kg|g|lb|oz|ml|l)\b/i) ??
-    flat.match(/\b(kg|g)\s*(\d+(?:[.,]\d+)?)/i);
-  let weightValue: number | null = null;
-  let weightUnit: string | null = null;
-  if (weight) {
-    const a = weight[1];
-    const b = weight[2];
-    if (/^(kg|g|lb|oz|ml|l)$/i.test(a) && b) {
-      weightValue = num(b);
-      weightUnit = a.toLowerCase();
-    } else {
-      weightValue = num(a);
-      weightUnit = (b ?? "kg").toLowerCase();
+  const cluster = pickScaleCluster(flat);
+
+  let weightValue: number | null = cluster?.weightValue ?? null;
+  let weightUnit: string | null = cluster?.weightUnit ?? null;
+  if (weightValue == null) {
+    const weight =
+      flat.match(
+        /(?:weight|wt|net|الوزن)\s*(?:kg|g)?\s*(\d+(?:[.,]\d+)?)\s*(kg|g|lb|oz)?/i,
+      ) ??
+      flat.match(/(\d+(?:[.,]\d+)?)\s*(kg|g|lb|oz|ml|l)\b/i) ??
+      flat.match(/\b(kg|g)\s*(\d+(?:[.,]\d+)?)/i);
+    if (weight) {
+      const a = weight[1];
+      const b = weight[2];
+      if (/^(kg|g|lb|oz|ml|l)$/i.test(a) && b) {
+        weightValue = num(b);
+        weightUnit = a.toLowerCase();
+      } else {
+        weightValue = num(a);
+        weightUnit = (b ?? "kg").toLowerCase();
+      }
     }
   }
 
@@ -197,19 +310,20 @@ export function parseLabelText(raw: string, barcode: string | null): LabelExtrac
     /(?:unit\s*price|سعر\s*الوحدة|u\.?\s*p\.?)\s*(?:AED|Dhs?)?\s*(\d+(?:[.,]\d+)?)/i,
   );
   const unitHit = parseUnitPrice(flat);
-  let unitPrice = labeledUnit ?? unitHit?.price ?? null;
-  let linePrice = parseLinePrice(flat, unitPrice);
+  let unitPrice = cluster?.unitPrice ?? labeledUnit ?? unitHit?.price ?? null;
+  let linePrice = cluster?.linePrice ?? parseLinePrice(flat, unitPrice);
 
-  const paired = pairByWeight(weightValue, weightUnit, moneyAmounts(flat));
-  if (paired) {
-    if (unitPrice == null) unitPrice = paired.unitPrice;
-    if (linePrice == null || Math.abs(linePrice - unitPrice) < 0.001) {
-      linePrice = paired.linePrice;
-    }
-    // Prefer the pair that matches the scale math when labels were ambiguous.
-    if (Math.abs(paired.unitPrice - (unitPrice ?? 0)) > 0.05 && labeledUnit == null) {
-      unitPrice = paired.unitPrice;
-      linePrice = paired.linePrice;
+  if (!cluster) {
+    const paired = pairByWeight(weightValue, weightUnit, moneyAmounts(flat));
+    if (paired) {
+      if (unitPrice == null) unitPrice = paired.unitPrice;
+      if (linePrice == null || Math.abs(linePrice - unitPrice) < 0.001) {
+        linePrice = paired.linePrice;
+      }
+      if (Math.abs(paired.unitPrice - (unitPrice ?? 0)) > 0.05 && labeledUnit == null) {
+        unitPrice = paired.unitPrice;
+        linePrice = paired.linePrice;
+      }
     }
   }
 
@@ -230,27 +344,7 @@ export function parseLabelText(raw: string, barcode: string | null): LabelExtrac
   }
 
   const foundBarcode = extractBarcode(raw, barcode);
-
-  const lines = raw
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 1);
-  const skip =
-    /^(AED|Dhs?|kg|g|oz|lb|total|qty|plu|org|organic|net|wt|weight|price|unit|lulu|carrefour|spinneys|waitrose|لو.?لو)$/i;
-  const fieldish =
-    /weight|unit\s*price|expiry|prod|packed|barcode|الوزن|سعر|تاريخ|الوحدة/i;
-  const nameCandidates = lines.filter(
-    (l) =>
-      !skip.test(l) &&
-      !fieldish.test(l) &&
-      !/^\d+([.,]\d+)?(kg|g)?$/i.test(l) &&
-      !/\d{8,}/.test(l.replace(/\s/g, "")) &&
-      l.length > 2,
-  );
-  const nameLine =
-    nameCandidates.find((l) => /[A-Za-z]{3,}/.test(l)) ??
-    nameCandidates[0] ??
-    (foundBarcode ? `Item ${foundBarcode}` : "Unknown item");
+  const nameLine = pickProductName(raw, foundBarcode);
 
   return {
     name: nameLine.slice(0, 80),

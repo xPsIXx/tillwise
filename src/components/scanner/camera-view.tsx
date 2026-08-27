@@ -18,7 +18,6 @@ import { detectBarcode, scoreFrame, StabilityGate } from "@/lib/grocery/detect";
 import {
   blobToDataUrl,
   captureCanvas,
-  cropDataUrl,
   cropVideo,
   imageToCanvas,
   LABEL_CAPTURE,
@@ -645,26 +644,14 @@ export function CameraView({
     setTimeout(() => setFlash(false), 220);
     try {
       const video = videoRef.current;
-      const crop = lastCropRef.current;
       let image: string;
       if (fromBlob) {
         const preset = mode === "receipt" ? RECEIPT_CAPTURE : LABEL_CAPTURE;
         image = await blobToDataUrl(fromBlob, preset.maxSide, preset.quality);
-        if (mode === "label" && ppocrReady()) {
-          try {
-            const img = await loadImage(image);
-            const hit = await runPpocr(imageToCanvas(img, 1280), undefined, {
-              reticle: false,
-            });
-            if (hit.crop) image = cropDataUrl(img, hit.crop);
-          } catch {
-            /* keep the full still */
-          }
-        }
       } else if (!video) {
         throw new Error("Camera is not ready");
       } else if (mode === "label") {
-        image = cropVideo(video, crop ?? LABEL_VIEWFINDER);
+        image = cropVideo(video, LABEL_VIEWFINDER);
       } else {
         image = captureCanvas(video, RECEIPT_CAPTURE.maxSide, RECEIPT_CAPTURE.quality);
       }
@@ -709,9 +696,14 @@ export function CameraView({
       const cfg = loadScanSettings();
       settingsRef.current = cfg;
       const detect = cfg.detect;
-      if (detect === "off") {
-        setLocked(false);
-        lastCropRef.current = null;
+      if (
+        detect === "off" ||
+        jobsRef.current.some((j) => j.status === "queued" || j.status === "reading")
+      ) {
+        if (detect === "off") {
+          setLocked(false);
+          lastCropRef.current = null;
+        }
         return;
       }
       const w = detect === "ppocr" ? 720 : 320;
@@ -991,8 +983,8 @@ export function CameraView({
         <div className="pointer-events-none absolute inset-0 z-[2]">
           <div
             className={cn(
-              "absolute left-[12%] right-[12%] rounded-[28px] border-2",
-              mode === "receipt" ? "top-[5%] bottom-[7%]" : "top-[16%] bottom-[26%]",
+              "absolute left-[4%] right-[4%] rounded-[28px] border-2",
+              mode === "receipt" ? "top-[6%] bottom-[8%]" : "top-[8%] bottom-[12%]",
               locked ? "border-accent viewfinder-pulse" : "border-fg/35",
             )}
           />

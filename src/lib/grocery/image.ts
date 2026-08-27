@@ -3,8 +3,8 @@ export type CropBox = { x0: number; y0: number; x1: number; y1: number };
 export const LABEL_CAPTURE = { maxSide: 1600, quality: 0.88 } as const;
 export const RECEIPT_CAPTURE = { maxSide: 2200, quality: 0.93 } as const;
 
-export const LABEL_VIEWFINDER: CropBox = { x0: 0.12, y0: 0.18, x1: 0.88, y1: 0.72 };
-export const RECEIPT_VIEWFINDER: CropBox = { x0: 0.12, y0: 0.1, x1: 0.88, y1: 0.82 };
+export const LABEL_VIEWFINDER: CropBox = { x0: 0.04, y0: 0.1, x1: 0.96, y1: 0.86 };
+export const RECEIPT_VIEWFINDER: CropBox = { x0: 0.06, y0: 0.06, x1: 0.94, y1: 0.9 };
 
 export async function blobToDataUrl(
   blob: Blob,

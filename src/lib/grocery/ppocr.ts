@@ -364,27 +364,48 @@ async function compilePpocr(): Promise<boolean> {
     try {
       if (window.ort?.env?.wasm) {
         window.ort.env.wasm.numThreads = 1;
-        window.ort.env.wasm.proxy = false;
+        window.ort.env.wasm.proxy = true;
       }
       console.info("[ppocr] create", {
         isolated: self.crossOriginIsolated,
         sab: typeof SharedArrayBuffer !== "undefined",
       });
-      const created = PaddleOCR.create({
-        worker: false,
+      const shared = {
         textDetectionModelName: modelSpec("det", currentSizes().det).name,
         textDetectionModelAsset: { url: detUrl },
         textRecognitionModelName: modelSpec("rec", currentSizes().rec).name,
         textRecognitionModelAsset: { url: recUrl },
-        ortOptions: {
-          backend: "wasm",
-          wasmPaths: ORT_WASM,
-          numThreads: 1,
-          simd: true,
-          proxy: false,
-          disableWasmProxy: true,
-        },
-      });
+      };
+      let created: Promise<PaddleInstance>;
+      try {
+        created = PaddleOCR.create({
+          ...shared,
+          worker: true,
+          ortOptions: {
+            backend: "wasm",
+            wasmPaths: ORT_WASM,
+            numThreads: 1,
+            simd: true,
+            proxy: true,
+            disableWasmProxy: false,
+          },
+        });
+        await created;
+      } catch (err) {
+        console.warn("[ppocr] worker create failed, using main thread", err);
+        created = PaddleOCR.create({
+          ...shared,
+          worker: false,
+          ortOptions: {
+            backend: "wasm",
+            wasmPaths: ORT_WASM,
+            numThreads: 1,
+            simd: true,
+            proxy: false,
+            disableWasmProxy: true,
+          },
+        });
+      }
       created.then((inst) => {
         store.instance = inst;
       });
