@@ -34,6 +34,7 @@ import { SAMPLE_LABELS, SAMPLE_RECEIPTS } from "@/lib/grocery/sample-data";
 import { fillFromMemory } from "@/lib/grocery/catalog";
 import {
   DETECT_OPTIONS,
+  PPOCR_SIZES,
   READ_OPTIONS,
   effectiveRead,
   holdForLook,
@@ -41,6 +42,7 @@ import {
   saveScanSettings,
   visionProvider,
   type DetectMode,
+  type PpocrSize,
   type ScanSettings,
 } from "@/lib/grocery/settings";
 import { loadTfjs, scoreTfFrame, tfReady, type EngineProgress } from "@/lib/grocery/tfjs";
@@ -1136,6 +1138,58 @@ export function CameraView({
               {DETECT_OPTIONS.find((o) => o.id === scanCfg.detect)?.body}
             </span>
           </label>
+          <div className="mb-3 grid grid-cols-2 gap-2">
+            <label>
+              <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-subtle">
+                Detect model
+              </span>
+              <select
+                className="mt-1 h-10 w-full rounded-lg bg-elevated px-3 text-sm"
+                value={scanCfg.ppocrDetSize}
+                onChange={(e) => {
+                  const next = {
+                    ...loadScanSettings(),
+                    ppocrDetSize: e.target.value as PpocrSize,
+                  };
+                  saveScanSettings(next);
+                  settingsRef.current = next;
+                  setScanCfg(next);
+                  void loadPpocr();
+                }}
+              >
+                {PPOCR_SIZES.map((opt) => (
+                  <option key={`det-${opt.id}`} value={opt.id}>
+                    {opt.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-subtle">
+                Read model
+              </span>
+              <select
+                className="mt-1 h-10 w-full rounded-lg bg-elevated px-3 text-sm"
+                value={scanCfg.ppocrRecSize}
+                onChange={(e) => {
+                  const next = {
+                    ...loadScanSettings(),
+                    ppocrRecSize: e.target.value as PpocrSize,
+                  };
+                  saveScanSettings(next);
+                  settingsRef.current = next;
+                  setScanCfg(next);
+                  void loadPpocr();
+                }}
+              >
+                {PPOCR_SIZES.map((opt) => (
+                  <option key={`rec-${opt.id}`} value={opt.id}>
+                    {opt.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
         )}
         <p className="mb-3 text-xs text-muted">
           Reader: {READ_OPTIONS.find((o) => o.id === scanCfg.read)?.title}.{" "}

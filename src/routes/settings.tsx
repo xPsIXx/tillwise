@@ -275,8 +275,7 @@ function SettingsPage() {
         </section>
       )}
 
-      {(settings.detect === "ppocr" || settings.read === "ppocr") && (
-        <section className="mt-8">
+      <section className="mt-8">
           <h2 className="font-display text-2xl">PP-OCR model sizes</h2>
           <p className="mt-1 text-sm text-muted">
             Detection finds the sticker. Recognition reads the letters. Tiny is for live
@@ -307,10 +306,8 @@ function SettingsPage() {
             ))}
           </div>
         </section>
-      )}
 
-      {(settings.detect === "ppocr" || settings.read === "ppocr") && (
-        <section className="mt-8">
+      <section className="mt-8">
           <h2 className="font-display text-2xl">PP-OCR sensitivity</h2>
           <p className="mt-1 text-sm text-muted">
             Loose keeps small produce-sticker text. Strict only locks on sharp type in the aim box.
@@ -327,7 +324,6 @@ function SettingsPage() {
             ))}
           </div>
         </section>
-      )}
 
       <section className="mt-10">
         <h2 className="font-display text-2xl">How to read it</h2>
