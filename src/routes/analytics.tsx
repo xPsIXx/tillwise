@@ -1,15 +1,28 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getGroceryAnalytics } from "@/lib/grocery/server";
+import { generateCommonNames, getGroceryAnalytics } from "@/lib/grocery/server";
 import { money, tripDay, unitMoney } from "@/lib/grocery/format";
+import { loadScanSettings } from "@/lib/grocery/settings";
 
 export const Route = createFileRoute("/analytics")({ component: AnalyticsPage });
 
 function AnalyticsPage() {
+  const qc = useQueryClient();
   const query = useQuery({
     queryKey: ["analytics"],
     queryFn: () => getGroceryAnalytics(),
+  });
+  const build = useMutation({
+    mutationFn: () => generateCommonNames({ data: { provider: loadScanSettings().collate } }),
+    onSuccess: (res) => {
+      toast.success(`Mapped ${res.mapped} printed name${res.mapped === 1 ? "" : "s"} to common names`);
+      void qc.invalidateQueries({ queryKey: ["analytics"] });
+      void qc.invalidateQueries({ queryKey: ["canonical-products"] });
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not build common names"),
   });
 
   if (query.isLoading) {
@@ -46,9 +59,14 @@ function AnalyticsPage() {
       <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted">Ledger</p>
       <h1 className="mt-2 font-display text-4xl tracking-tight">Analytics</h1>
       <p className="mt-2 max-w-xl text-sm text-muted">
-        Compared across stores from filed trips. Unit prices use the per-kilo figure when the
-        scale sticker had one.
+        Compared across stores from filed trips. Carts keep the wording on the sticker (Australian
+        Carrots). Tap Build common names so charts roll those into Onion, Carrots, and so on.
       </p>
+      <div className="mt-4">
+        <Button onClick={() => build.mutate()} disabled={build.isPending}>
+          {build.isPending ? "Mapping names…" : "Build common names"}
+        </Button>
+      </div>
 
       <dl className="mt-6 grid grid-cols-3 gap-3">
         <Stat label="Spend" value={money(data.totalSpend, data.currency)} />

@@ -134,13 +134,13 @@ function asLabel(obj: Record<string, unknown>): LabelExtraction {
     description: str(obj.description),
     barcode: str(obj.barcode) ?? fallback?.barcode ?? null,
     category: str(obj.category),
-    quantity: num(obj.quantity) ?? fallback?.quantity,
-    quantityUnit: str(obj.quantity_unit) ?? str(obj.quantityUnit) ?? fallback?.quantityUnit,
+    quantity: num(obj.quantity) ?? fallback?.quantity ?? null,
+    quantityUnit: str(obj.quantity_unit) ?? str(obj.quantityUnit) ?? fallback?.quantityUnit ?? null,
     weightValue: num(obj.weight_value) ?? num(obj.weightValue) ?? fallback?.weightValue ?? null,
     weightUnit: str(obj.weight_unit) ?? str(obj.weightUnit) ?? fallback?.weightUnit ?? null,
     unitPrice: num(obj.unit_price) ?? num(obj.unitPrice) ?? fallback?.unitPrice ?? null,
     linePrice: num(obj.line_price) ?? num(obj.linePrice) ?? fallback?.linePrice ?? null,
-    currency: str(obj.currency) ?? fallback?.currency,
+    currency: str(obj.currency) ?? fallback?.currency ?? null,
     origin: str(obj.origin),
     rawText,
   };
@@ -198,6 +198,7 @@ export async function readLabelImage(
     prompt: `This is a photo of a grocery product: a produce scale sticker, packaged-goods label, shelf tag, or barcode.
 Extract what is actually printed. Prefer the scale sticker when both a bag and a sticker are visible.
 ${hint}
+name MUST be the product wording printed on the sticker (e.g. Australian Carrots, Indian Onion, Cauliflower), including origin or variety. Do not collapse it to a generic common name. Never use the store logo, field labels (WEIGHT, UNIT PRICE, EXPIRY DATE), or garbled OCR.
 GCC scale stickers (Lulu, Carrefour, Spinneys) are a grid:
 WEIGHT / الوزن = net kg; UNIT PRICE / سعر الوحدة = per-kg rate even when "/kg" is not printed; large number bottom-right = amount payable (weight × unit). Barcode digits sit along the bottom.
 Produce stickers usually show THREE numbers: net weight, unit price (per kg / per lb / per 100g), and line total.
@@ -517,4 +518,37 @@ ${JSON.stringify(receipt)}`,
       notes: str(obj.notes),
     },
   };
+}
+
+export async function mapCommonNames(
+  printed: string[],
+  provider?: LlmProvider,
+): Promise<{ ok: true; mappings: { printed: string; common: string }[] } | { ok: false; error: string }> {
+  const unique = [...new Set(printed.map((n) => n.trim()).filter(Boolean))];
+  if (unique.length === 0) return { ok: true, mappings: [] };
+  const result = await chat({
+    maxTokens: 1800,
+    provider: provider ?? "local",
+    task: "text",
+    prompt: `Map grocery names as printed on stickers or till tape to a short common name for statistics only.
+Keep origin/variety on the printed side; common is the generic produce or product (Carrots, Onion, Tomatoes, Milk).
+Examples: "Australian Carrots" → Carrots; "Indian Onion" → Onion; "TOM VINE" → Tomatoes.
+Do not invent items missing from the list.
+Return JSON: { "mappings": [ { "printed": "...", "common": "..." } ] }
+
+NAMES:
+${JSON.stringify(unique)}`,
+  });
+  if (!result.ok) return result;
+  const obj = parseJson(result.text);
+  const rows = obj && Array.isArray(obj.mappings) ? obj.mappings : [];
+  const mappings: { printed: string; common: string }[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const rec = row as Record<string, unknown>;
+    const p = str(rec.printed) ?? str(rec.name);
+    const c = str(rec.common) ?? str(rec.canonical);
+    if (p && c) mappings.push({ printed: p, common: c });
+  }
+  return { ok: true, mappings };
 }

@@ -79,6 +79,20 @@ type Job = {
   confidence?: number | null;
 };
 
+type JobBag = {
+  jobs: Job[];
+  running: number;
+  claimed: Set<string>;
+};
+
+function jobBag(): JobBag {
+  const g = globalThis as typeof globalThis & { __tillwiseScanJobs?: JobBag };
+  if (!g.__tillwiseScanJobs) {
+    g.__tillwiseScanJobs = { jobs: [], running: 0, claimed: new Set() };
+  }
+  return g.__tillwiseScanJobs;
+}
+
 const PLACEHOLDER_LABEL: LabelExtraction = {
   name: "Reading label…",
   brand: null,
@@ -261,8 +275,6 @@ export function CameraView({
   const streamRef = useRef<MediaStream | null>(null);
   const gateRef = useRef(new StabilityGate(4, 900));
   const snapLock = useRef(false);
-  const jobsRef = useRef<Job[]>([]);
-  const runningRef = useRef(0);
   const settingsRef = useRef<ScanSettings>(loadScanSettings());
   const [scanCfg, setScanCfg] = useState<ScanSettings>(() => settingsRef.current);
   const lastCropRef = useRef<CropBox | null>(null);
@@ -271,7 +283,7 @@ export function CameraView({
   const [hint, setHint] = useState("Frame a label");
   const [locked, setLocked] = useState(false);
   const [flash, setFlash] = useState(false);
-  const [jobs, setJobs] = useState<Job[]>([]);
+  const [jobs, setJobs] = useState<Job[]>(() => [...jobBag().jobs]);
   const [pending, setPending] = useState<Pending | null>(null);
   const [saving, setSaving] = useState(false);
   const [engine, setEngine] = useState<EngineProgress | null>(null);
@@ -439,7 +451,7 @@ export function CameraView({
     };
   }, [camera]);
 
-  const publishJobs = () => setJobs([...jobsRef.current]);
+  const publishJobs = () => setJobs([...jobBag().jobs]);
 
   async function runJob(job: Job) {
     job.status = "reading";
@@ -572,21 +584,27 @@ export function CameraView({
     } finally {
       publishJobs();
       window.setTimeout(() => {
-        jobsRef.current = jobsRef.current.filter((j) => j.id !== job.id || j.status === "reading");
+        const bag = jobBag();
+        bag.jobs = bag.jobs.filter((j) => j.id !== job.id || (j.status !== "done" && j.status !== "error"));
         publishJobs();
-      }, 1800);
+      }, job.status === "error" ? 8000 : 2200);
     }
   }
 
   async function drain() {
-    while (runningRef.current < 2) {
-      const next = jobsRef.current.find((j) => j.status === "queued");
+    const bag = jobBag();
+    const cfg = loadScanSettings();
+    const maxParallel = cfg.read === "ppocr" || cfg.read === "device" ? 1 : 3;
+    while (bag.running < maxParallel) {
+      const next = bag.jobs.find((j) => j.status === "queued" && !bag.claimed.has(j.id));
       if (!next) return;
+      bag.claimed.add(next.id);
       next.status = "reading";
-      runningRef.current += 1;
+      bag.running += 1;
       publishJobs();
       void runJob(next).finally(() => {
-        runningRef.current -= 1;
+        bag.running = Math.max(0, bag.running - 1);
+        bag.claimed.delete(next.id);
         void drain();
       });
     }
@@ -634,7 +652,7 @@ export function CameraView({
     } catch (err) {
       console.error("[shot]", err);
     }
-    jobsRef.current = [...jobsRef.current, job];
+    jobBag().jobs = [...jobBag().jobs, job];
     publishJobs();
     void drain();
   }
@@ -657,21 +675,25 @@ export function CameraView({
       } else {
         image = captureCanvas(video, RECEIPT_CAPTURE.maxSide, RECEIPT_CAPTURE.quality);
       }
-      let barcode: string | null = null;
-      if (mode === "label") {
-        try {
-          const blob = await (await fetch(image)).blob();
-          const bmp = await createImageBitmap(blob);
-          barcode = await detectBarcode(bmp);
-          bmp.close();
-        } catch {
-          barcode = null;
-        }
-      }
-      await enqueue(image, barcode, mode);
       setHint(mode === "label" ? "Keep scanning" : "Next portion");
+      snapLock.current = false;
+      void (async () => {
+        let barcode: string | null = null;
+        if (mode === "label") {
+          try {
+            const blob = await (await fetch(image)).blob();
+            const bmp = await createImageBitmap(blob);
+            barcode = await detectBarcode(bmp);
+            bmp.close();
+          } catch {
+            barcode = null;
+          }
+        }
+        await enqueue(image, barcode, mode);
+      })();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not capture");
+      snapLock.current = false;
     } finally {
       snapLock.current = false;
       gateRef.current.reset();
@@ -700,7 +722,7 @@ export function CameraView({
       const detect = cfg.detect;
       if (
         detect === "off" ||
-        jobsRef.current.some((j) => j.status === "queued" || j.status === "reading")
+        jobBag().jobs.some((j) => j.status === "queued" || j.status === "reading")
       ) {
         if (detect === "off") {
           setLocked(false);
@@ -1104,6 +1126,7 @@ export function CameraView({
         </div>
 
         {mode === "label" && (
+          <>
           <label className="mb-3 block">
             <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-subtle">
               Detection
@@ -1190,6 +1213,7 @@ export function CameraView({
               </select>
             </label>
           </div>
+          </>
         )}
         <p className="mb-3 text-xs text-muted">
           Reader: {READ_OPTIONS.find((o) => o.id === scanCfg.read)?.title}.{" "}

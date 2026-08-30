@@ -1646,3 +1646,63 @@ export const saveLlmConfig = createServerFn({ method: "POST" })
     const { saveLlmConfig: persist } = await import("./llm");
     return persist(data);
   });
+
+export const generateCommonNames = createServerFn({ method: "POST" })
+  .validator((input: { provider?: LlmProvider }) => input)
+  .handler(async ({ data }): Promise<{ mapped: number }> => {
+    const sql = await getSql();
+    const names = await sql<{ name: string }>`
+      select distinct name
+        from trip_items
+       where name is not null
+         and trim(name) <> ''
+         and name not ilike 'Reading%'
+         and name not ilike 'Couldn''t%'
+         and name not ilike 'Unknown%'
+       order by name
+       limit 200
+    `;
+    const { mapCommonNames } = await import("./vision");
+    const result = await mapCommonNames(
+      names.map((r) => r.name),
+      data.provider ?? "local",
+    );
+    if (!result.ok) throw new Error(result.error);
+    let mapped = 0;
+    for (const row of result.mappings) {
+      const printed = row.printed.trim();
+      const common = row.common.trim();
+      if (!printed || !common) continue;
+      const commonKey = catalogKey(common);
+      const printedKey = catalogKey(printed);
+      if (!commonKey || !printedKey) continue;
+      const existing = await sql<{ id: number }>`
+        select id from products where lower(name) = lower(${common}) limit 1
+      `;
+      let productId = existing[0] ? Number(existing[0].id) : 0;
+      if (!productId) {
+        const created = await sql<{ id: number }>`
+          insert into products (name) values (${common}) returning id
+        `;
+        productId = Number(created[0]?.id ?? 0);
+      }
+      if (!productId) continue;
+      await sql`
+        insert into product_aliases (product_id, alias_key, source)
+        values (${productId}, ${commonKey}, 'llm')
+        on conflict (alias_key) do update set product_id = excluded.product_id, source = 'llm'
+      `;
+      await sql`
+        insert into product_aliases (product_id, alias_key, source)
+        values (${productId}, ${printedKey}, 'llm')
+        on conflict (alias_key) do update set product_id = excluded.product_id, source = 'llm'
+      `;
+      await sql`
+        update trip_items
+           set product_id = ${productId}
+         where lower(name) = lower(${printed})
+      `;
+      mapped += 1;
+    }
+    return { mapped };
+  });

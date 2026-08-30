@@ -16,12 +16,16 @@ import {
   deleteItem,
   deleteReceiptCapture,
   deleteTrip,
+  getShotImage,
   getTrip,
   updateItem,
+  updateReceiptCapture,
+  updateScanShot,
   updateTrip,
 } from "@/lib/grocery/server";
 import { money, statusLabel, tripDate } from "@/lib/grocery/format";
-import { loadScanSettings } from "@/lib/grocery/settings";
+import { readReceiptCapture } from "@/lib/grocery/read-capture";
+import { loadScanSettings, visionProvider } from "@/lib/grocery/settings";
 import type { ScanShot, TripItem } from "@/lib/grocery/types";
 
 export const Route = createFileRoute("/trip/$tripId")({ component: TripPage });
@@ -117,6 +121,56 @@ function TripPage() {
     onSuccess: invalidate,
   });
 
+  const reprocessSlips = useMutation({
+    mutationFn: async () => {
+      const photos = detailQuery.data?.shots ?? [];
+      const slips = photos.filter((s) => s.kind === "receipt");
+      if (slips.length === 0) throw new Error("No till slips on this trip");
+      const provider = visionProvider(loadScanSettings());
+      let ok = 0;
+      let fail = 0;
+      for (const shot of slips) {
+        try {
+          const { image } = await getShotImage({ data: shot.id });
+          const extracted = await readReceiptCapture(image, provider);
+          if (shot.captureId) {
+            await updateReceiptCapture({ data: { captureId: shot.captureId, extracted } });
+          }
+          await updateScanShot({ data: { shotId: shot.id, lastRead: extracted } });
+          ok += 1;
+        } catch (err) {
+          fail += 1;
+          const message = err instanceof Error ? err.message : "Could not read till slip";
+          await updateScanShot({
+            data: {
+              shotId: shot.id,
+              lastRead: {
+                storeName: null,
+                storeLocation: null,
+                datetime: null,
+                isPartial: true,
+                portionHint: null,
+                items: [],
+                subtotal: null,
+                tax: null,
+                total: null,
+                currency: null,
+                rawText: message,
+              },
+            },
+          }).catch(() => undefined);
+        }
+      }
+      return { ok, fail, total: slips.length };
+    },
+    onSuccess: (res) => {
+      if (res.fail === 0) toast.success(`Re-read ${res.ok} till slip${res.ok === 1 ? "" : "s"}`);
+      else toast.error(`Re-read ${res.ok} of ${res.total} — ${res.fail} failed`);
+      invalidate();
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not reprocess slips"),
+  });
+
   if (!Number.isFinite(tripId)) {
     return <p className="py-10 text-sm text-muted">Missing trip.</p>;
   }
@@ -204,6 +258,15 @@ function TripPage() {
             >
               {collate.isPending ? "Collating…" : "Collate trip"}
             </Button>
+            {receipts.length > 0 && (
+              <Button
+                variant="secondary"
+                disabled={reprocessSlips.isPending}
+                onClick={() => reprocessSlips.mutate()}
+              >
+                {reprocessSlips.isPending ? "Re-reading slips…" : "Reprocess till slips"}
+              </Button>
+            )}
             {canFile && (
               <Button variant="primary" onClick={() => finish.mutate()} disabled={finish.isPending}>
                 {finish.isPending ? "Filing…" : "File trip"}

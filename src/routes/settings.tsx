@@ -278,8 +278,8 @@ function SettingsPage() {
       <section className="mt-8">
           <h2 className="font-display text-2xl">PP-OCR model sizes</h2>
           <p className="mt-1 text-sm text-muted">
-            Detection finds the sticker. Recognition reads the letters. Tiny is for live
-            detect; small or medium for the snap.
+            Detection finds text boxes on the photo; recognition reads the letters in those boxes.
+            A snap always runs detection first — even with a manual shutter — then recognition.
           </p>
           <h3 className="mt-4 text-sm font-medium">Detection model</h3>
           <div className="mt-2 grid gap-2">

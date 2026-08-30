@@ -10,17 +10,27 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AnalyticsRouteImport } from './routes/analytics'
+import { Route as PricesRouteImport } from './routes/prices'
 import { Route as ScanRouteImport } from './routes/scan'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ShotsRouteImport } from './routes/shots'
-import { Route as PricesRouteImport } from './routes/prices'
-import { Route as AnalyticsRouteImport } from './routes/analytics'
 import { Route as TripsRouteImport } from './routes/trips'
 import { Route as TripTripIdRouteImport } from './routes/trip.$tripId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AnalyticsRoute = AnalyticsRouteImport.update({
+  id: '/analytics',
+  path: '/analytics',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PricesRoute = PricesRouteImport.update({
+  id: '/prices',
+  path: '/prices',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ScanRoute = ScanRouteImport.update({
@@ -38,16 +48,6 @@ const ShotsRoute = ShotsRouteImport.update({
   path: '/shots',
   getParentRoute: () => rootRouteImport,
 } as any)
-const PricesRoute = PricesRouteImport.update({
-  id: '/prices',
-  path: '/prices',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const AnalyticsRoute = AnalyticsRouteImport.update({
-  id: '/analytics',
-  path: '/analytics',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const TripsRoute = TripsRouteImport.update({
   id: '/trips',
   path: '/trips',
@@ -61,59 +61,75 @@ const TripTripIdRoute = TripTripIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/analytics': typeof AnalyticsRoute
+  '/prices': typeof PricesRoute
   '/scan': typeof ScanRoute
   '/settings': typeof SettingsRoute
   '/shots': typeof ShotsRoute
-  '/prices': typeof PricesRoute
-  '/analytics': typeof AnalyticsRoute
   '/trips': typeof TripsRoute
   '/trip/$tripId': typeof TripTripIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/analytics': typeof AnalyticsRoute
+  '/prices': typeof PricesRoute
   '/scan': typeof ScanRoute
   '/settings': typeof SettingsRoute
   '/shots': typeof ShotsRoute
-  '/prices': typeof PricesRoute
-  '/analytics': typeof AnalyticsRoute
   '/trips': typeof TripsRoute
   '/trip/$tripId': typeof TripTripIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/analytics': typeof AnalyticsRoute
+  '/prices': typeof PricesRoute
   '/scan': typeof ScanRoute
   '/settings': typeof SettingsRoute
   '/shots': typeof ShotsRoute
-  '/prices': typeof PricesRoute
-  '/analytics': typeof AnalyticsRoute
   '/trips': typeof TripsRoute
   '/trip/$tripId': typeof TripTripIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/scan' | '/settings' | '/shots' | '/prices' | '/analytics' | '/trips' | '/trip/$tripId'
-  fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/scan' | '/settings' | '/shots' | '/prices' | '/analytics' | '/trips' | '/trip/$tripId'
-  id:
-    | '__root__'
+  fullPaths:
     | '/'
+    | '/analytics'
+    | '/prices'
     | '/scan'
     | '/settings'
     | '/shots'
-    | '/prices'
+    | '/trips'
+    | '/trip/$tripId'
+  fileRoutesByTo: FileRoutesByTo
+  to:
+    | '/'
     | '/analytics'
+    | '/prices'
+    | '/scan'
+    | '/settings'
+    | '/shots'
+    | '/trips'
+    | '/trip/$tripId'
+  id:
+    | '__root__'
+    | '/'
+    | '/analytics'
+    | '/prices'
+    | '/scan'
+    | '/settings'
+    | '/shots'
     | '/trips'
     | '/trip/$tripId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AnalyticsRoute: typeof AnalyticsRoute
+  PricesRoute: typeof PricesRoute
   ScanRoute: typeof ScanRoute
   SettingsRoute: typeof SettingsRoute
   ShotsRoute: typeof ShotsRoute
-  PricesRoute: typeof PricesRoute
-  AnalyticsRoute: typeof AnalyticsRoute
   TripsRoute: typeof TripsRoute
   TripTripIdRoute: typeof TripTripIdRoute
 }
@@ -125,6 +141,20 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/analytics': {
+      id: '/analytics'
+      path: '/analytics'
+      fullPath: '/analytics'
+      preLoaderRoute: typeof AnalyticsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/prices': {
+      id: '/prices'
+      path: '/prices'
+      fullPath: '/prices'
+      preLoaderRoute: typeof PricesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/scan': {
@@ -148,20 +178,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShotsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/prices': {
-      id: '/prices'
-      path: '/prices'
-      fullPath: '/prices'
-      preLoaderRoute: typeof PricesRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/analytics': {
-      id: '/analytics'
-      path: '/analytics'
-      fullPath: '/analytics'
-      preLoaderRoute: typeof AnalyticsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/trips': {
       id: '/trips'
       path: '/trips'
@@ -181,11 +197,11 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AnalyticsRoute: AnalyticsRoute,
+  PricesRoute: PricesRoute,
   ScanRoute: ScanRoute,
   SettingsRoute: SettingsRoute,
   ShotsRoute: ShotsRoute,
-  PricesRoute: PricesRoute,
-  AnalyticsRoute: AnalyticsRoute,
   TripsRoute: TripsRoute,
   TripTripIdRoute: TripTripIdRoute,
 }

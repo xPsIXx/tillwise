@@ -238,45 +238,33 @@ function pickScaleCluster(raw: string): ScaleCluster | null {
 }
 
 function pickProductName(raw: string, foundBarcode: string | null): string {
-  const junk =
-    /weight|unit\s*price|expiry|prod|packed|barcode|scale|total|amount|lulu|carrefour|spinneys|waitrose|olaglle|jgl|الوزن|سعر|تاريخ|الوحدة|قرنبيط/i;
-  const tokens = raw
-    .split(/[\r\n]+|(?<=[a-z])(?=[A-Z])/)
-    .flatMap((line) => line.split(/[^A-Za-z]+/))
-    .map((t) => t.trim())
-    .filter((t) => t.length >= 4);
-  const words = tokens.filter(
-    (t) =>
-      /[aeiouy]/i.test(t) &&
-      /[A-Za-z]{4,}/.test(t) &&
-      !junk.test(t) &&
-      !/^\d/.test(t),
-  );
-  const titled = words.find((t) => /^[A-Z][a-z]{3,}$/.test(t));
-  if (titled) return titled;
-  if (words[0]) return words[0][0].toUpperCase() + words[0].slice(1).toLowerCase();
+  const junkToken =
+    /^(weight|unit|price|expiry|date|prod|packed|on|barcode|scale|total|amount|lulu|carrefour|spinneys|waitrose|olaglle|jgl|item|net|wt|qty|plu)$/i;
+  const fieldish =
+    /weight|unit\s*price|expiry|prod\/?packed|barcode|الوزن|سعر|تاريخ|الوحدة/i;
   const lines = raw
     .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l.length > 2);
-  const skip =
-    /^(AED|Dhs?|kg|g|oz|lb|total|qty|plu|org|organic|net|wt|weight|price|unit|lulu|carrefour|spinneys|waitrose|لو.?لو)$/i;
-  const fieldish =
-    /weight|unit\s*price|expiry|prod|packed|barcode|الوزن|سعر|تاريخ|الوحدة/i;
-  const nameCandidates = lines.filter(
-    (l) =>
-      !skip.test(l) &&
-      !fieldish.test(l) &&
-      !/^\d+([.,]\d+)?(kg|g)?$/i.test(l) &&
-      !/\d{8,}/.test(l.replace(/\s/g, "")) &&
-      /[aeiouy]/i.test(l) &&
-      l.length > 3,
-  );
-  return (
-    nameCandidates.find((l) => /[A-Za-z]{4,}/.test(l)) ??
-    nameCandidates[0] ??
-    (foundBarcode ? `Item ${foundBarcode}` : "Unknown item")
-  );
+    .map((l) => l.replace(/\s+/g, " ").trim())
+    .filter((l) => l.length > 1);
+  for (const line of lines) {
+    if (fieldish.test(line) || /^\d+([.,]\d+)?(kg|g)?$/i.test(line)) continue;
+    if (/\d{8,}/.test(line.replace(/\s/g, ""))) continue;
+    const words = [...line.matchAll(/\b[A-Za-z][A-Za-z']{2,}\b/g)]
+      .map((m) => m[0])
+      .filter((w) => !junkToken.test(w) && /[aeiouy]/i.test(w));
+    if (words.length === 0) continue;
+    return words.slice(0, 6).join(" ");
+  }
+  const run = raw.match(/(?:[A-Z][a-z']+(?:\s+|$)){1,6}/);
+  if (run) {
+    const phrase = run[0]
+      .trim()
+      .split(/\s+/)
+      .filter((w) => !junkToken.test(w))
+      .join(" ");
+    if (phrase.length >= 3) return phrase;
+  }
+  return foundBarcode ? `Item ${foundBarcode}` : "Unknown item";
 }
 
 export function parseLabelText(raw: string, barcode: string | null): LabelExtraction {
