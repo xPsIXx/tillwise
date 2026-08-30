@@ -2,17 +2,20 @@
 
 All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
-## Unreleased
+## 0.3.2 — 2026-08-30
 
 - Scan queue claims each photo once (up to 3 BYOK reads at a time) so responses are not dropped or double-fired. The shutter does not wait for the model.
-- Detection model size is used for the recognition pipeline (find boxes, then read them), even with a manual shutter.
-- Cart names stay as printed on the sticker; Analytics has **Build common names** to roll origin variants into Onion / Carrots for charts.
+- Detection model size is used to find text boxes before recognition, including with a manual shutter. Size pickers stay visible in Settings and on Scan.
+- Cart names stay as printed on the sticker (`Australian Carrots`). Analytics has **Build common names** to roll origin variants into Onion / Carrots for charts.
 - Trip page can reprocess every till slip in one tap.
+
+## 0.3.1 — 2026-08-27
+
 - Larger label viewfinder so you can line the sticker up inside the box.
 - Snap crops to that box (not a tiny live-detect rectangle).
 - PP-OCR recognition runs in a WASM worker so the camera stays live; you can snap the next label while one is still reading.
 - Scale-sticker parser treats stacked Lulu labels as separate clusters and keeps the set whose weight × unit price matches the line total (so 0.478 kg / 19.95 / 9.55 does not mix with 0.752 kg / 10.95 / 8.25).
-- Product names keep the sticker wording (`Australian Carrots`); OCR still drops junk like `jgl`.
+- Product names keep the sticker wording; OCR still drops junk like `jgl`.
 
 ## 0.3.0 — 2026-08-26
 
