@@ -2,6 +2,10 @@
 
 All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
+## 0.3.7 — 2026-08-31
+
+- Restore the v0.3.3 camera pipeline that already worked: `facingMode: ideal environment`, then unconstrained `{ video: true }`. No timeouts that abort `getUserMedia`, no front/rear label guessing.
+
 ## 0.3.6 — 2026-08-31
 
 - Camera starts on any working stream (with a timeout) instead of hanging on 1080p `environment` constraints. The overlay clears as soon as a track is live, then we switch to the rear camera.
