@@ -14,7 +14,7 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { detectBarcode, scoreFrame, StabilityGate } from "@/lib/grocery/detect";
+import { detectBarcode } from "@/lib/grocery/detect";
 import {
   blobToDataUrl,
   captureCanvas,
@@ -26,26 +26,21 @@ import {
   makeThumbnail,
   publicImageToDataUrl,
   RECEIPT_CAPTURE,
-  type CropBox,
 } from "@/lib/grocery/image";
 import { extractionConfidence, extractionIsThin, readLabelOnDevice } from "@/lib/grocery/parse-local";
 import { loadPpocr, parsePpocrText, ppocrReady, runPpocr } from "@/lib/grocery/ppocr";
 import { SAMPLE_LABELS, SAMPLE_RECEIPTS } from "@/lib/grocery/sample-data";
 import { fillFromMemory } from "@/lib/grocery/catalog";
 import {
-  DETECT_OPTIONS,
-  PPOCR_SIZES,
   READ_OPTIONS,
   effectiveRead,
   holdForLook,
   loadScanSettings,
   saveScanSettings,
   visionProvider,
-  type DetectMode,
-  type PpocrSize,
   type ScanSettings,
 } from "@/lib/grocery/settings";
-import { loadTfjs, scoreTfFrame, tfReady, type EngineProgress } from "@/lib/grocery/tfjs";
+import { type EngineProgress } from "@/lib/grocery/tfjs";
 import {
   addLabelItem,
   addReceiptCapture,
@@ -273,15 +268,12 @@ export function CameraView({
   const viewCanvasRef = useRef<HTMLCanvasElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const gateRef = useRef(new StabilityGate(4, 900));
   const snapLock = useRef(false);
   const settingsRef = useRef<ScanSettings>(loadScanSettings());
   const [scanCfg, setScanCfg] = useState<ScanSettings>(() => settingsRef.current);
-  const lastCropRef = useRef<CropBox | null>(null);
   const [camera, setCamera] = useState<CameraStatus>("starting");
   const [torch, setTorch] = useState(false);
   const [hint, setHint] = useState("Frame a label");
-  const [locked, setLocked] = useState(false);
   const [flash, setFlash] = useState(false);
   const [jobs, setJobs] = useState<Job[]>(() => [...jobBag().jobs]);
   const [pending, setPending] = useState<Pending | null>(null);
@@ -313,7 +305,6 @@ export function CameraView({
         }
       }
       setCamera("live");
-      gateRef.current.reset();
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       console.error("[camera]", err);
@@ -345,7 +336,7 @@ export function CameraView({
         settingsRef.current = { ...cfg, read: nextRead };
       }
       if (cfg.read === "local" && !llm.localAvailable) {
-        setReaderWarn("No local vision model — labels use PP-OCR on this phone. Add LLM_BASE_URL for receipts.");
+        setReaderWarn(null);
       } else if (
         (cfg.read === "byok" || cfg.read === "grok") &&
         !llm.byokAvailable
@@ -405,26 +396,10 @@ export function CameraView({
     const cfg = loadScanSettings();
     settingsRef.current = cfg;
     async function boot() {
-      const needTf = cfg.detect === "tensorflow";
-      const needPpocr = cfg.detect === "ppocr" || cfg.read === "ppocr";
-      if (!needTf && !needPpocr) {
+      const needPpocr = cfg.read === "ppocr";
+      if (!needPpocr) {
         setEngine(null);
         return;
-      }
-      if (needTf && !tfReady()) {
-        const ok = await loadTfjs((p) => {
-          if (!cancelled) setEngine(p);
-        });
-        if (cancelled) return;
-        if (!ok) {
-          setEngine({ label: "TensorFlow.js failed to load — using shape detect", pct: 0 });
-          toast.error("TensorFlow.js did not load. Shape detect is still available.");
-        } else {
-          setEngine({ label: "TensorFlow.js ready", pct: 100 });
-          window.setTimeout(() => {
-            if (!cancelled) setEngine(null);
-          }, 1200);
-        }
       }
       if (needPpocr && !ppocrReady()) {
         const ok = await loadPpocr((p) => {
@@ -433,7 +408,7 @@ export function CameraView({
         if (cancelled) return;
         if (!ok) {
           setEngine({ label: "PP-OCRv6 failed to load", pct: 0, error: true });
-          toast.error("PP-OCRv6 did not load. Try shape detect or another reader.");
+          toast.error("PP-OCRv6 did not load. Switch How to read to BYOK in Settings.");
         } else {
           setEngine({ label: "PP-OCRv6 ready", pct: 100 });
           window.setTimeout(() => {
@@ -696,114 +671,10 @@ export function CameraView({
       snapLock.current = false;
     } finally {
       snapLock.current = false;
-      gateRef.current.reset();
     }
   }
 
-  useEffect(() => {
-    if (camera !== "live") return;
-    const video = videoRef.current;
-    if (!video) return;
-    let raf = 0;
-    let ticks = 0;
-    let inflight = false;
-    let lastPpocr = 0;
-    let lastTf = 0;
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-
-    const loop = () => {
-      raf = requestAnimationFrame(loop);
-      ticks += 1;
-      if (ticks % 4 !== 0 || !ctx || snapLock.current || inflight) return;
-      if (video.readyState < 2) return;
-      const cfg = loadScanSettings();
-      settingsRef.current = cfg;
-      const detect = cfg.detect;
-      if (
-        detect === "off" ||
-        jobBag().jobs.some((j) => j.status === "queued" || j.status === "reading")
-      ) {
-        if (detect === "off") {
-          setLocked(false);
-          lastCropRef.current = null;
-        }
-        return;
-      }
-      const w = detect === "ppocr" ? 720 : 320;
-      const h = Math.round((video.videoHeight / Math.max(video.videoWidth, 1)) * w) || 180;
-      canvas.width = w;
-      canvas.height = h;
-      ctx.drawImage(video, 0, 0, w, h);
-
-      inflight = true;
-      void (async () => {
-        try {
-          let ready = false;
-          let code: string | null = null;
-          if (detect === "tensorflow") {
-            const now = Date.now();
-            if (now - lastTf < 400) return;
-            lastTf = now;
-            if (tfReady()) {
-              const score = await scoreTfFrame(canvas);
-              ready = score >= cfg.confidence;
-              setHint(ready ? "Label locked" : `MobileNet ${Math.round(score * 100)}%`);
-            } else {
-              const frame = ctx.getImageData(0, 0, w, h);
-              const scored = scoreFrame(frame, mode);
-              ready = scored.focused && scored.aligned && scored.score > cfg.confidence;
-              setHint("Loading TensorFlow.js…");
-            }
-            lastCropRef.current = null;
-          } else if (detect === "ppocr") {
-            const now = Date.now();
-            if (now - lastPpocr < 900) return;
-            lastPpocr = now;
-            if (ppocrReady()) {
-              const hit = await runPpocr(canvas, undefined, { reticle: true, feel: cfg.ppocrFeel });
-              lastCropRef.current = hit.crop;
-              ready = hit.ready;
-              if (hit.text) setHint(hit.text.slice(0, 32));
-              else if (ready) setHint("Label locked");
-              else setHint("Frame the sticker");
-            } else {
-              const frame = ctx.getImageData(0, 0, w, h);
-              const scored = scoreFrame(frame, mode);
-              ready = scored.focused && scored.aligned && scored.score > cfg.confidence;
-              setHint("Loading PP-OCRv6…");
-            }
-          } else {
-            lastCropRef.current = null;
-            const frame = ctx.getImageData(0, 0, w, h);
-            const scored = scoreFrame(frame, mode);
-            code = await detectBarcode(canvas);
-            ready =
-              detect === "barcode"
-                ? Boolean(code)
-                : Boolean(code) ||
-                  (scored.focused && scored.aligned && scored.score > cfg.confidence);
-            if (code) setHint(`Barcode ${code}`);
-            else if (ready) setHint(mode === "receipt" ? "Receipt locked" : "Label locked");
-            else if (scored.focused) setHint("Hold steady");
-            else setHint(mode === "receipt" ? "Align the till tape" : "Frame the sticker");
-          }
-          setLocked(ready);
-          if (cfg.autoCapture && gateRef.current.update(ready)) {
-            void captureNow();
-          }
-        } finally {
-          inflight = false;
-        }
-      })();
-    };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [camera, mode]);
-
   async function onFile(file: File) {
-    lastCropRef.current = null;
     await captureNow(file);
   }
 
@@ -1009,7 +880,7 @@ export function CameraView({
             className={cn(
               "absolute left-[4%] right-[4%] rounded-[28px] border-2",
               mode === "receipt" ? "top-[6%] bottom-[8%]" : "top-[8%] bottom-[12%]",
-              locked ? "border-accent viewfinder-pulse" : "border-fg/35",
+              "border-fg/35",
             )}
           />
         </div>
@@ -1111,8 +982,6 @@ export function CameraView({
               type="button"
               onClick={() => {
                 onMode(m);
-                gateRef.current.reset();
-                lastCropRef.current = null;
                 setHint(m === "label" ? "Frame a label" : "Align the till tape");
               }}
               className={cn(
@@ -1125,96 +994,6 @@ export function CameraView({
           ))}
         </div>
 
-        {mode === "label" && (
-          <>
-          <label className="mb-3 block">
-            <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-subtle">
-              Detection
-            </span>
-            <select
-              className="mt-1 h-10 w-full rounded-lg bg-elevated px-3 text-sm"
-              value={scanCfg.detect}
-              onChange={(e) => {
-                const detect = e.target.value as DetectMode;
-                const next = {
-                  ...loadScanSettings(),
-                  detect,
-                  autoCapture: detect === "off" ? false : loadScanSettings().autoCapture,
-                };
-                saveScanSettings(next);
-                settingsRef.current = next;
-                setScanCfg(next);
-                setHint(
-                  detect === "off"
-                    ? "Manual shutter — tap when the sticker is in frame"
-                    : DETECT_OPTIONS.find((o) => o.id === detect)?.title ?? "Detect",
-                );
-              }}
-            >
-              {DETECT_OPTIONS.map((opt) => (
-                <option key={opt.id} value={opt.id}>
-                  {opt.title}
-                </option>
-              ))}
-            </select>
-            <span className="mt-1 block text-xs text-muted">
-              {DETECT_OPTIONS.find((o) => o.id === scanCfg.detect)?.body}
-            </span>
-          </label>
-          <div className="mb-3 grid grid-cols-2 gap-2">
-            <label>
-              <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-subtle">
-                Detect model
-              </span>
-              <select
-                className="mt-1 h-10 w-full rounded-lg bg-elevated px-3 text-sm"
-                value={scanCfg.ppocrDetSize}
-                onChange={(e) => {
-                  const next = {
-                    ...loadScanSettings(),
-                    ppocrDetSize: e.target.value as PpocrSize,
-                  };
-                  saveScanSettings(next);
-                  settingsRef.current = next;
-                  setScanCfg(next);
-                  void loadPpocr();
-                }}
-              >
-                {PPOCR_SIZES.map((opt) => (
-                  <option key={`det-${opt.id}`} value={opt.id}>
-                    {opt.title}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-subtle">
-                Read model
-              </span>
-              <select
-                className="mt-1 h-10 w-full rounded-lg bg-elevated px-3 text-sm"
-                value={scanCfg.ppocrRecSize}
-                onChange={(e) => {
-                  const next = {
-                    ...loadScanSettings(),
-                    ppocrRecSize: e.target.value as PpocrSize,
-                  };
-                  saveScanSettings(next);
-                  settingsRef.current = next;
-                  setScanCfg(next);
-                  void loadPpocr();
-                }}
-              >
-                {PPOCR_SIZES.map((opt) => (
-                  <option key={`rec-${opt.id}`} value={opt.id}>
-                    {opt.title}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          </>
-        )}
         <p className="mb-3 text-xs text-muted">
           Reader: {READ_OPTIONS.find((o) => o.id === scanCfg.read)?.title}.{" "}
           {scanCfg.read === "local" || scanCfg.read === "byok" || scanCfg.read === "grok"

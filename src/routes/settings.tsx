@@ -1,14 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { deviceTextAvailable } from "@/lib/grocery/parse-local";
 import { loadPpocr, ppocrReady } from "@/lib/grocery/ppocr";
 import {
   COLLATE_OPTIONS,
-  DETECT_OPTIONS,
   PPOCR_FEEL,
   PPOCR_SIZES,
   READ_OPTIONS,
@@ -18,7 +16,7 @@ import {
   type VisionDetail,
 } from "@/lib/grocery/settings";
 import { getLlmConfig, listLlmModels, saveLlmConfig } from "@/lib/grocery/server";
-import { loadTfjs, tfReady, type EngineProgress } from "@/lib/grocery/tfjs";
+import { type EngineProgress } from "@/lib/grocery/tfjs";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/settings")({ component: SettingsPage });
@@ -39,7 +37,6 @@ function SettingsPage() {
   const [localModelErr, setLocalModelErr] = useState<string | null>(null);
   const [byokModelErr, setByokModelErr] = useState<string | null>(null);
   const [engine, setEngine] = useState<EngineProgress | null>(null);
-  const textOk = useMemo(() => deviceTextAvailable(), []);
 
   const cfgQuery = useQuery({
     queryKey: ["llm-config"],
@@ -71,17 +68,7 @@ function SettingsPage() {
   useEffect(() => {
     let cancelled = false;
     async function boot() {
-      if (settings.detect === "tensorflow" && !tfReady()) {
-        const ok = await loadTfjs((p) => {
-          if (!cancelled) setEngine(p);
-        });
-        if (cancelled) return;
-        if (!ok) {
-          setEngine({ label: "TensorFlow.js failed to load", pct: 0, error: true });
-          return;
-        }
-      }
-      if ((settings.detect === "ppocr" || settings.read === "ppocr") && !ppocrReady()) {
+      if (settings.read === "ppocr" && !ppocrReady()) {
         const ok = await loadPpocr((p) => {
           if (!cancelled) setEngine(p);
         });
@@ -95,7 +82,7 @@ function SettingsPage() {
           return;
         }
       }
-      if (!cancelled && (tfReady() || ppocrReady())) {
+      if (!cancelled && ppocrReady()) {
         window.setTimeout(() => {
           if (!cancelled) setEngine(null);
         }, 800);
@@ -105,7 +92,7 @@ function SettingsPage() {
     return () => {
       cancelled = true;
     };
-  }, [settings.detect, settings.read, settings.ppocrDetSize, settings.ppocrRecSize]);
+  }, [settings.read, settings.ppocrDetSize]);
 
   function patch(next: Partial<ScanSettings>) {
     setSettings((prev) => {
@@ -226,91 +213,28 @@ function SettingsPage() {
       )}
 
       <section className="mt-8">
-        <h2 className="font-display text-2xl">When to snap</h2>
+        <h2 className="font-display text-2xl">PP-OCR model size</h2>
         <p className="mt-1 text-sm text-muted">
-          Runs in the browser. Nothing is uploaded until a photo is taken.
+          Used after you tap the shutter. Finds text on the photo and reads it. Nothing watches
+          the live camera.
         </p>
         <div className="mt-4 grid gap-2">
-          {DETECT_OPTIONS.map((opt) => (
+          {PPOCR_SIZES.map((opt) => (
             <Choice
-              key={opt.id}
+              key={`det-${opt.id}`}
               title={opt.title}
               body={opt.body}
-              selected={settings.detect === opt.id}
-              onSelect={() =>
-                patch({
-                  detect: opt.id,
-                  autoCapture: opt.id === "off" ? false : settings.autoCapture,
-                })
-              }
+              selected={settings.ppocrDetSize === opt.id}
+              onSelect={() => patch({ ppocrDetSize: opt.id, ppocrRecSize: opt.id })}
             />
           ))}
         </div>
       </section>
 
-      {settings.detect !== "off" && (
-        <section className="mt-8">
-          <Toggle
-            label="Auto-capture"
-            hint="Fire the shutter when the detector stays locked."
-            checked={settings.autoCapture}
-            onChange={(autoCapture) => patch({ autoCapture })}
-          />
-          {settings.detect !== "ppocr" && (
-            <label className="mt-4 block">
-              <span className="text-sm font-medium">Lock threshold</span>
-              <span className="mt-0.5 block text-xs text-muted">
-                Higher = pickier. Current {Math.round(settings.confidence * 100)}%.
-              </span>
-              <input
-                type="range"
-                min={10}
-                max={85}
-                value={Math.round(settings.confidence * 100)}
-                onChange={(e) => patch({ confidence: Number(e.target.value) / 100 })}
-                className="mt-3 w-full accent-accent"
-              />
-            </label>
-          )}
-        </section>
-      )}
-
-      <section className="mt-8">
-          <h2 className="font-display text-2xl">PP-OCR model sizes</h2>
-          <p className="mt-1 text-sm text-muted">
-            Detection finds text boxes on the photo; recognition reads the letters in those boxes.
-            A snap always runs detection first — even with a manual shutter — then recognition.
-          </p>
-          <h3 className="mt-4 text-sm font-medium">Detection model</h3>
-          <div className="mt-2 grid gap-2">
-            {PPOCR_SIZES.map((opt) => (
-              <Choice
-                key={`det-${opt.id}`}
-                title={opt.title}
-                body={opt.body}
-                selected={settings.ppocrDetSize === opt.id}
-                onSelect={() => patch({ ppocrDetSize: opt.id })}
-              />
-            ))}
-          </div>
-          <h3 className="mt-5 text-sm font-medium">Recognition model</h3>
-          <div className="mt-2 grid gap-2">
-            {PPOCR_SIZES.map((opt) => (
-              <Choice
-                key={`rec-${opt.id}`}
-                title={opt.title}
-                body={opt.body}
-                selected={settings.ppocrRecSize === opt.id}
-                onSelect={() => patch({ ppocrRecSize: opt.id })}
-              />
-            ))}
-          </div>
-        </section>
-
       <section className="mt-8">
           <h2 className="font-display text-2xl">PP-OCR sensitivity</h2>
           <p className="mt-1 text-sm text-muted">
-            Loose keeps small produce-sticker text. Strict only locks on sharp type in the aim box.
+            Loose keeps small produce-sticker text. Strict ignores faint or busy background type.
           </p>
           <div className="mt-4 grid gap-2">
             {PPOCR_FEEL.map((opt) => (
@@ -328,7 +252,7 @@ function SettingsPage() {
       <section className="mt-10">
         <h2 className="font-display text-2xl">How to read it</h2>
         <p className="mt-1 text-sm text-muted">
-          Labels use this reader. Till tape always needs a vision LLM (local or BYOK) — PP-OCR
+          Labels use this reader. Till tape always needs BYOK vision — PP-OCR
           is a label engine, not a receipt layout model.
         </p>
         <div className="mt-4 grid gap-2">
@@ -337,13 +261,9 @@ function SettingsPage() {
               key={opt.id}
               title={opt.title}
               body={
-                opt.id === "device" && !textOk
-                  ? `${opt.body} This browser has no Text Detector — barcode + regex only.`
-                  : opt.id === "local" && cfg && !cfg.localAvailable
-                    ? `${opt.body} Not configured yet — set LLM_BASE_URL and VISION_MODEL below.`
-                    : opt.id === "byok" && cfg && !cfg.byokAvailable
-                      ? `${opt.body} Add an endpoint, vision model, and API key below.`
-                      : opt.body
+                opt.id === "byok" && cfg && !cfg.byokAvailable
+                  ? `${opt.body} Add an endpoint, vision model, and API key below.`
+                  : opt.body
               }
               selected={settings.read === opt.id}
               onSelect={() => patch({ read: opt.id })}

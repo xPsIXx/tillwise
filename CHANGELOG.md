@@ -2,6 +2,11 @@
 
 All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
+## 0.3.3 — 2026-08-31
+
+- Manual shutter only: removed When to snap, auto-capture, live detector, TensorFlow/shape/barcode lock, and leftover detect settings. You tap; then PP-OCR or BYOK reads the photo.
+- Removed the Recognition model picker from Settings and the Read / Detection pickers from the label scan page. One PP-OCR size in Settings is used after the snap.
+
 ## 0.3.2 — 2026-08-30
 
 - Scan queue claims each photo once (up to 3 BYOK reads at a time) so responses are not dropped or double-fired. The shutter does not wait for the model.

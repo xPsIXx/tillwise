@@ -1,77 +1,40 @@
 import type { LlmProvider } from "./types";
 
-export type DetectMode = "tensorflow" | "ppocr" | "shape" | "barcode" | "off";
 export type ReadMode = "local" | "ppocr" | "byok" | "grok" | "device";
 export type VisionDetail = "low" | "high";
 export type PpocrFeel = "loose" | "normal" | "strict";
 export type PpocrSize = "tiny" | "small" | "medium";
 
 export type ScanSettings = {
-  detect: DetectMode;
   read: ReadMode;
   collate: LlmProvider;
-  autoCapture: boolean;
   autoAdd: boolean;
   debugSamples: boolean;
-  confidence: number;
   visionDetail: VisionDetail;
   ppocrFeel: PpocrFeel;
   ppocrDetSize: PpocrSize;
   ppocrRecSize: PpocrSize;
 };
 
-export const DETECT_OPTIONS: { id: DetectMode; title: string; body: string }[] = [
-  {
-    id: "tensorflow",
-    title: "TensorFlow.js",
-    body: "On this phone. MobileNet (~5–10 MB from the CDN) scores the frame, then we snap. Same path as your Unraid scanner.",
-  },
-  {
-    id: "ppocr",
-    title: "PP-OCRv6",
-    body: "On this phone. Finds text in the aim box. First enable downloads from Hugging Face (~30 MB) then compiles WASM — keep this tab open. Cached after that.",
-  },
-  {
-    id: "shape",
-    title: "Shape + barcode",
-    body: "On this phone, no download. Lock when a sticker rectangle is sharp, or a barcode is in frame.",
-  },
-  {
-    id: "barcode",
-    title: "Barcode only",
-    body: "On this phone: wait for EAN / UPC / Code 128. Best for packaged goods.",
-  },
-  {
-    id: "off",
-    title: "Manual shutter",
-    body: "Default. You tap the shutter. The aim box still helps you frame, but nothing fires on its own.",
-  },
-];
-
 export const PPOCR_SIZES: { id: PpocrSize; title: string; body: string }[] = [
   {
     id: "tiny",
     title: "Tiny",
-    body: "Fastest on a phone (~1.5M). Best for live detect. Weaker on small English type.",
+    body: "Fastest (~1.5M). Weaker on small English type.",
   },
   {
     id: "small",
     title: "Small",
-    body: "Balanced (~8M). Default for reading stickers.",
+    body: "Balanced (~8M). Default. Finds the text boxes, then reads them.",
   },
   {
     id: "medium",
     title: "Medium",
-    body: "Sharpest (~35M). Slow to compile and to run. Use for hard stickers, not live detect.",
+    body: "Sharpest (~35M). Slow to compile. Use when stickers are dense or faint.",
   },
 ];
 
 export const READ_OPTIONS: { id: ReadMode; title: string; body: string }[] = [
-  {
-    id: "local",
-    title: "Local vision LLM",
-    body: "Your server at LLM_BASE_URL / VISION_MODEL. After a snap the photo goes straight to the cart and reads in the background — no confirm sheet.",
-  },
   {
     id: "ppocr",
     title: "PP-OCRv6 on-device",
@@ -81,11 +44,6 @@ export const READ_OPTIONS: { id: ReadMode; title: string; body: string }[] = [
     id: "byok",
     title: "BYOK vision",
     body: "Your cloud or remote API. Paste an OpenAI-compatible endpoint, vision model, and API key below. Snaps file immediately and read in the background — no confirm sheet.",
-  },
-  {
-    id: "device",
-    title: "Browser text",
-    body: "Text Detector API + regex. Thin fallback if PP-OCR is not loaded.",
   },
 ];
 
@@ -105,13 +63,10 @@ export const COLLATE_OPTIONS: { id: LlmProvider; title: string; body: string }[]
 const KEY = "tillwise.scan-settings";
 
 const DEFAULTS: ScanSettings = {
-  detect: "off",
   read: "ppocr",
   collate: "local",
-  autoCapture: false,
   autoAdd: true,
   debugSamples: false,
-  confidence: 0.28,
   visionDetail: "high",
   ppocrFeel: "loose",
   ppocrDetSize: "tiny",
@@ -167,12 +122,6 @@ export function ppocrParams(feel: PpocrFeel) {
   };
 }
 
-function clampConfidence(n: number): number {
-  if (!Number.isFinite(n)) return DEFAULTS.confidence;
-  return Math.min(0.85, Math.max(0.1, n));
-}
-
-const DETECTS: DetectMode[] = ["tensorflow", "ppocr", "shape", "barcode", "off"];
 const READS: ReadMode[] = ["local", "ppocr", "byok", "grok", "device"];
 const SIZES: PpocrSize[] = ["tiny", "small", "medium"];
 
@@ -186,7 +135,6 @@ export function loadScanSettings(): ScanSettings {
     const raw = window.localStorage.getItem(KEY);
     if (!raw) return DEFAULTS;
     const parsed = JSON.parse(raw) as Partial<ScanSettings> & { v?: number };
-    const version = Number(parsed.v ?? 0);
     const feel: PpocrFeel =
       parsed.ppocrFeel === "normal" || parsed.ppocrFeel === "strict" || parsed.ppocrFeel === "loose"
         ? parsed.ppocrFeel
@@ -194,26 +142,17 @@ export function loadScanSettings(): ScanSettings {
     let read: ReadMode = READS.includes(parsed.read as ReadMode)
       ? (parsed.read as ReadMode)
       : DEFAULTS.read;
-    if (read === "grok") read = "byok";
-    // v1 defaulted to local vision. With no model that path is dead — prefer PP-OCR.
-    if (version < 2 && read === "local") read = "ppocr";
+    if (read === "grok" || read === "local" || read === "device") read = read === "grok" ? "byok" : "ppocr";
+    if (read !== "ppocr" && read !== "byok") read = DEFAULTS.read;
     return {
-      detect:
-        version < 4
-          ? "off"
-          : DETECTS.includes(parsed.detect as DetectMode)
-            ? (parsed.detect as DetectMode)
-            : DEFAULTS.detect,
       read,
       collate: parsed.collate === "byok" || parsed.collate === "grok" ? "byok" : "local",
-      autoCapture: version < 4 ? false : Boolean(parsed.autoCapture),
       autoAdd: parsed.autoAdd ?? DEFAULTS.autoAdd,
       debugSamples: Boolean(parsed.debugSamples),
-      confidence: clampConfidence(Number(parsed.confidence ?? DEFAULTS.confidence)),
       visionDetail: parsed.visionDetail === "low" ? "low" : "high",
       ppocrFeel: feel,
       ppocrDetSize: asSize(parsed.ppocrDetSize, DEFAULTS.ppocrDetSize),
-      ppocrRecSize: asSize(parsed.ppocrRecSize, DEFAULTS.ppocrRecSize),
+      ppocrRecSize: asSize(parsed.ppocrDetSize, DEFAULTS.ppocrDetSize),
     };
   } catch {
     return DEFAULTS;
@@ -222,7 +161,10 @@ export function loadScanSettings(): ScanSettings {
 
 export function saveScanSettings(next: ScanSettings) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(KEY, JSON.stringify({ ...next, v: 4 }));
+  window.localStorage.setItem(
+    KEY,
+    JSON.stringify({ ...next, ppocrRecSize: next.ppocrDetSize, v: 6 }),
+  );
 }
 
 /** Vision LLMs skip the confirm sheet — they file and read in the background. */

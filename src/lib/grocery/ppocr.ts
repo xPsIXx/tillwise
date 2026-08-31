@@ -16,7 +16,7 @@ type ModelKind = "det" | "rec";
 
 function currentSizes(): { det: PpocrSize; rec: PpocrSize } {
   const cfg = loadScanSettings();
-  return { det: cfg.ppocrDetSize, rec: cfg.ppocrRecSize };
+  return { det: cfg.ppocrDetSize, rec: cfg.ppocrDetSize };
 }
 
 function sizeKey(): string {
