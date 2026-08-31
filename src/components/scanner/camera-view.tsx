@@ -148,13 +148,18 @@ function isFrontFacing(stream: MediaStream): boolean {
   const facing = trackFacing(stream);
   if (facing === "user") return true;
   if (facing === "environment") return false;
-  return /front|user|face|selfie/i.test(trackLabel(stream));
+  const label = trackLabel(stream);
+  // Do not match the substring "face" inside "facing back".
+  if (/facing\s*back|back camera|rear camera|\brear\b|environment|world/i.test(label)) {
+    return false;
+  }
+  return /facing\s*front|front camera|selfie|facetime/i.test(label);
 }
 
 function isRearDevice(info: MediaDeviceInfo): boolean {
   const label = info.label || "";
-  if (/front|user|face|selfie/i.test(label)) return false;
-  return /back|rear|environment|world|facing back/i.test(label);
+  if (/facing\s*front|front camera|selfie|facetime/i.test(label)) return false;
+  return /facing\s*back|back camera|rear camera|\brear\b|environment|world/i.test(label);
 }
 
 async function rearCameraId(): Promise<string | null> {
@@ -165,10 +170,6 @@ async function rearCameraId(): Promise<string | null> {
     );
     const named = cams.find(isRearDevice);
     if (named?.deviceId) return named.deviceId;
-    // Don't guess while labels are still empty (first permission grant).
-    if (cams.every((d) => !d.label)) return null;
-    const notFront = cams.find((d) => d.deviceId && !/front|user|face|selfie/i.test(d.label));
-    if (cams.length > 1 && notFront && notFront !== cams[0]) return notFront.deviceId;
     return null;
   } catch {
     return null;
@@ -179,38 +180,31 @@ async function openCamera(facing: "environment" | "user"): Promise<MediaStream> 
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new DOMException("Camera API missing", "NotSupportedError");
   }
-  const attempts: MediaStreamConstraints[] = [];
-  if (facing === "environment") {
-    attempts.push({
+  const attempts: MediaStreamConstraints[] = [
+    {
       audio: false,
-      video: { facingMode: { exact: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-    });
-    attempts.push({ audio: false, video: { facingMode: { exact: "environment" } } });
-    attempts.push({
-      audio: false,
-      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-    });
-    attempts.push({ audio: false, video: { facingMode: { ideal: "environment" } } });
-    attempts.push({ audio: false, video: { facingMode: "environment" } });
-  } else {
-    attempts.push({ audio: false, video: { facingMode: { exact: "user" } } });
-    attempts.push({ audio: false, video: { facingMode: { ideal: "user" } } });
-  }
+      video: {
+        facingMode: { ideal: facing },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+      },
+    },
+    { audio: false, video: { facingMode: { ideal: facing } } },
+    { audio: false, video: { facingMode: facing } },
+  ];
 
   let last: unknown;
-  let stream: MediaStream | null = null;
   for (const constraints of attempts) {
     try {
-      const next = await navigator.mediaDevices.getUserMedia(constraints);
-      next.getVideoTracks().forEach((t) => {
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      stream.getVideoTracks().forEach((t) => {
         t.enabled = true;
       });
-      if (facing === "environment" && isFrontFacing(next)) {
-        next.getTracks().forEach((t) => t.stop());
+      if (facing === "environment" && isFrontFacing(stream)) {
+        stream.getTracks().forEach((t) => t.stop());
         continue;
       }
-      stream = next;
-      break;
+      return stream;
     } catch (err) {
       last = err;
     }
@@ -218,7 +212,7 @@ async function openCamera(facing: "environment" | "user"): Promise<MediaStream> 
 
   if (facing === "environment") {
     const deviceId = await rearCameraId();
-    if (deviceId && (!stream || isFrontFacing(stream))) {
+    if (deviceId) {
       try {
         const byId = await navigator.mediaDevices.getUserMedia({
           audio: false,
@@ -227,10 +221,7 @@ async function openCamera(facing: "environment" | "user"): Promise<MediaStream> 
         byId.getVideoTracks().forEach((t) => {
           t.enabled = true;
         });
-        if (!isFrontFacing(byId)) {
-          stream?.getTracks().forEach((t) => t.stop());
-          return byId;
-        }
+        if (!isFrontFacing(byId)) return byId;
         byId.getTracks().forEach((t) => t.stop());
       } catch (err) {
         last = err;
@@ -238,8 +229,7 @@ async function openCamera(facing: "environment" | "user"): Promise<MediaStream> 
     }
   }
 
-  if (stream) return stream;
-  throw last instanceof Error ? last : new Error("Rear camera failed");
+  throw last instanceof Error ? last : new Error("Camera failed");
 }
 
 function bindVideo(stream: MediaStream, video: HTMLVideoElement | null) {
@@ -376,7 +366,7 @@ export function CameraView({
       }
       const el = videoRef.current;
       const got = el ? await waitForFrame(el, stream, 8000) : false;
-      if (!got || isFrontFacing(stream)) {
+      if (!got) {
         const fallback = await acquireCamera(true, "environment");
         streamRef.current = fallback;
         bindVideo(fallback, videoRef.current);

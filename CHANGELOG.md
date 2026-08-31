@@ -2,6 +2,10 @@
 
 All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
+## 0.3.5 — 2026-08-31
+
+- Camera start: Android labels like `facing back` were treated as the selfie cam (`face` matched `facing`), so every rear stream was dropped.
+
 ## 0.3.4 — 2026-08-31
 
 - Prefer the rear camera: `facingMode: environment` first, then a labelled back camera after permission. Do not guess the last unlabeled device.
