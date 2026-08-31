@@ -2,6 +2,10 @@
 
 All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
+## 0.3.6 — 2026-08-31
+
+- Camera starts on any working stream (with a timeout) instead of hanging on 1080p `environment` constraints. The overlay clears as soon as a track is live, then we switch to the rear camera.
+
 ## 0.3.5 — 2026-08-31
 
 - Camera start: Android labels like `facing back` were treated as the selfie cam (`face` matched `facing`), so every rear stream was dropped.

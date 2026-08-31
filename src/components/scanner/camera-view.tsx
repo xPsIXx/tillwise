@@ -176,60 +176,68 @@ async function rearCameraId(): Promise<string | null> {
   }
 }
 
-async function openCamera(facing: "environment" | "user"): Promise<MediaStream> {
+async function getUserMediaTimed(
+  constraints: MediaStreamConstraints,
+  ms = 5000,
+): Promise<MediaStream> {
+  let late: MediaStream | null = null;
+  const request = navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
+    late = stream;
+    return stream;
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const stream = await Promise.race([
+      request,
+      new Promise<MediaStream>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new DOMException("Camera timeout", "TimeoutError")),
+          ms,
+        );
+      }),
+    ]);
+    stream.getVideoTracks().forEach((t) => {
+      t.enabled = true;
+    });
+    return stream;
+  } catch (err) {
+    void request
+      .then((stream) => stream.getTracks().forEach((t) => t.stop()))
+      .catch(() => undefined);
+    late?.getTracks().forEach((t) => t.stop());
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function openCamera(): Promise<MediaStream> {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new DOMException("Camera API missing", "NotSupportedError");
   }
-  const attempts: MediaStreamConstraints[] = [
-    {
-      audio: false,
-      video: {
-        facingMode: { ideal: facing },
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
-      },
-    },
-    { audio: false, video: { facingMode: { ideal: facing } } },
-    { audio: false, video: { facingMode: facing } },
-  ];
+  return getUserMediaTimed({ audio: false, video: true }, 8000);
+}
 
-  let last: unknown;
+async function switchToRearIfNeeded(current: MediaStream): Promise<MediaStream> {
+  if (!isFrontFacing(current) && trackFacing(current) === "environment") return current;
+  const rearId = await rearCameraId();
+  const attempts: MediaStreamConstraints[] = [];
+  if (rearId) attempts.push({ audio: false, video: { deviceId: { exact: rearId } } });
+  attempts.push({ audio: false, video: { facingMode: { ideal: "environment" } } });
+  attempts.push({ audio: false, video: { facingMode: "environment" } });
   for (const constraints of attempts) {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      stream.getVideoTracks().forEach((t) => {
-        t.enabled = true;
-      });
-      if (facing === "environment" && isFrontFacing(stream)) {
-        stream.getTracks().forEach((t) => t.stop());
-        continue;
+      const next = await getUserMediaTimed(constraints, 3500);
+      if (!isFrontFacing(next)) {
+        current.getTracks().forEach((t) => t.stop());
+        return next;
       }
-      return stream;
-    } catch (err) {
-      last = err;
+      next.getTracks().forEach((t) => t.stop());
+    } catch {
+      /* keep current */
     }
   }
-
-  if (facing === "environment") {
-    const deviceId = await rearCameraId();
-    if (deviceId) {
-      try {
-        const byId = await navigator.mediaDevices.getUserMedia({
-          audio: false,
-          video: { deviceId: { exact: deviceId } },
-        });
-        byId.getVideoTracks().forEach((t) => {
-          t.enabled = true;
-        });
-        if (!isFrontFacing(byId)) return byId;
-        byId.getTracks().forEach((t) => t.stop());
-      } catch (err) {
-        last = err;
-      }
-    }
-  }
-
-  throw last instanceof Error ? last : new Error("Camera failed");
+  return current;
 }
 
 function bindVideo(stream: MediaStream, video: HTMLVideoElement | null) {
@@ -251,47 +259,11 @@ function bindVideo(stream: MediaStream, video: HTMLVideoElement | null) {
   return true;
 }
 
-function waitForFrame(video: HTMLVideoElement, stream: MediaStream, ms = 5000): Promise<boolean> {
-  return new Promise((resolve) => {
-    let done = false;
-    const track = stream.getVideoTracks()[0];
-    const finish = (ok: boolean) => {
-      if (done) return;
-      done = true;
-      video.removeEventListener("playing", check);
-      video.removeEventListener("loadeddata", check);
-      video.removeEventListener("loadedmetadata", check);
-      track?.removeEventListener("unmute", check);
-      window.clearTimeout(timer);
-      resolve(ok);
-    };
-    const check = () => {
-      if (video.videoWidth > 2 && video.videoHeight > 2) finish(true);
-    };
-    video.addEventListener("playing", check);
-    video.addEventListener("loadeddata", check);
-    video.addEventListener("loadedmetadata", check);
-    track?.addEventListener("unmute", check);
-    if (typeof video.requestVideoFrameCallback === "function") {
-      video.requestVideoFrameCallback(() => finish(true));
-    }
-    const timer = window.setTimeout(() => finish(video.videoWidth > 2), ms);
-    void video.play().then(check).catch(() => undefined);
-    check();
-  });
-}
-
-function acquireCamera(fresh = false, facing: "environment" | "user" = "environment"): Promise<MediaStream> {
-  if (
-    !fresh &&
-    streamIsLive(sharedStream) &&
-    !(facing === "environment" && isFrontFacing(sharedStream))
-  ) {
-    return Promise.resolve(sharedStream);
-  }
+function acquireCamera(fresh = false): Promise<MediaStream> {
+  if (!fresh && streamIsLive(sharedStream)) return Promise.resolve(sharedStream);
   if (!fresh && sharedAcquire) return sharedAcquire;
   const previous = sharedStream;
-  sharedAcquire = openCamera(facing)
+  sharedAcquire = openCamera()
     .then((stream) => {
       if (previous && previous !== stream) previous.getTracks().forEach((t) => t.stop());
       sharedStream = stream;
@@ -355,30 +327,26 @@ export function CameraView({
 
   const start = useCallback(async (fresh = false) => {
     setCamera((c) => (c === "live" && !fresh ? c : "starting"));
+    const watchdog = window.setTimeout(() => {
+      setCamera((c) => (c === "starting" ? "error" : c));
+    }, 12000);
     try {
-      const stream = await acquireCamera(fresh, "environment");
+      const stream = await acquireCamera(fresh);
       streamRef.current = stream;
-      const video = videoRef.current;
-      bindVideo(stream, video);
-      if (!video) {
+      bindVideo(stream, videoRef.current);
+      if (!videoRef.current) {
         await new Promise<void>((r) => requestAnimationFrame(() => r()));
         bindVideo(stream, videoRef.current);
       }
       const el = videoRef.current;
-      const got = el ? await waitForFrame(el, stream, 8000) : false;
-      if (!got) {
-        const fallback = await acquireCamera(true, "environment");
-        streamRef.current = fallback;
-        bindVideo(fallback, videoRef.current);
-        const again = videoRef.current
-          ? await waitForFrame(videoRef.current, fallback, 8000)
-          : false;
-        if (!again) {
-          setCamera("error");
-          return;
-        }
-      }
+      if (el) void el.play().catch(() => undefined);
       setCamera("live");
+      void switchToRearIfNeeded(stream).then((next) => {
+        if (next === stream) return;
+        sharedStream = next;
+        streamRef.current = next;
+        bindVideo(next, videoRef.current);
+      });
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;
       console.error("[camera]", err);
@@ -388,6 +356,8 @@ export function CameraView({
       } else {
         setCamera("error");
       }
+    } finally {
+      window.clearTimeout(watchdog);
     }
   }, []);
 
