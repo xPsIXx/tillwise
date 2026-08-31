@@ -180,11 +180,7 @@ async function getUserMediaTimed(
   constraints: MediaStreamConstraints,
   ms = 5000,
 ): Promise<MediaStream> {
-  let late: MediaStream | null = null;
-  const request = navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
-    late = stream;
-    return stream;
-  });
+  const request = navigator.mediaDevices.getUserMedia(constraints);
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const stream = await Promise.race([
@@ -204,7 +200,6 @@ async function getUserMediaTimed(
     void request
       .then((stream) => stream.getTracks().forEach((t) => t.stop()))
       .catch(() => undefined);
-    late?.getTracks().forEach((t) => t.stop());
     throw err;
   } finally {
     if (timer) clearTimeout(timer);
