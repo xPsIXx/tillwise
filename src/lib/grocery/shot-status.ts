@@ -20,6 +20,13 @@ function isReceiptRead(last: ScanShot["lastRead"]): last is ReceiptExtraction {
 function isFailedRead(last: ScanShot["lastRead"]): boolean {
   if (!last) return false;
   if (isLabelRead(last) && /^couldn't read/i.test(last.name)) return true;
+  if (
+    isReceiptRead(last) &&
+    last.items.length === 0 &&
+    /^couldn't read/i.test(last.rawText)
+  ) {
+    return true;
+  }
   return false;
 }
 

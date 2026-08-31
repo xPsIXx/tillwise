@@ -2,6 +2,12 @@
 
 All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
+## 0.3.4 — 2026-08-31
+
+- Prefer the rear camera: `facingMode: environment` first, then a labelled back camera after permission. Do not guess the last unlabeled device.
+- Filed trips stay editable. Reopen puts one back into shopping so you can scan and file again.
+- Trip page: **Reprocess labels with PP-OCR** runs the on-device det+rec pipeline on every label photo (one at a time). **Send all through BYOK** still covers labels and till slips.
+
 ## 0.3.3 — 2026-08-31
 
 - Manual shutter only: removed When to snap, auto-capture, live detector, TensorFlow/shape/barcode lock, and leftover detect settings. You tap; then PP-OCR or BYOK reads the photo.

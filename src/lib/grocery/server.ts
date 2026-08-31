@@ -936,6 +936,21 @@ export const completeTrip = createServerFn({ method: "POST" })
     return trip;
   });
 
+export const reopenTrip = createServerFn({ method: "POST" })
+  .validator((tripId: number) => tripId)
+  .handler(async ({ data: tripId }): Promise<Trip> => {
+    const sql = await getSql();
+    await sql`
+      update trips
+         set status = 'shopping',
+             completed_at = null
+       where id = ${tripId}
+    `;
+    const trip = await loadTrip(tripId);
+    if (!trip) throw new Error("Trip not found");
+    return trip;
+  });
+
 function nameKey(name: string): string {
   return catalogKey(name);
 }

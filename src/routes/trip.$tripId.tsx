@@ -16,19 +16,134 @@ import {
   deleteItem,
   deleteReceiptCapture,
   deleteTrip,
+  getLlmConfig,
   getShotImage,
   getTrip,
+  reopenTrip,
   updateItem,
   updateReceiptCapture,
   updateScanShot,
   updateTrip,
 } from "@/lib/grocery/server";
 import { money, statusLabel, tripDate } from "@/lib/grocery/format";
-import { readReceiptCapture } from "@/lib/grocery/read-capture";
-import { loadScanSettings, visionProvider } from "@/lib/grocery/settings";
-import type { ScanShot, TripItem } from "@/lib/grocery/types";
+import { extractionConfidence } from "@/lib/grocery/parse-local";
+import { readLabelCapture, readReceiptCapture } from "@/lib/grocery/read-capture";
+import { loadScanSettings } from "@/lib/grocery/settings";
+import type { LabelExtraction, ReceiptExtraction, ScanShot, TripItem } from "@/lib/grocery/types";
 
 export const Route = createFileRoute("/trip/$tripId")({ component: TripPage });
+
+function failedLabel(message: string): LabelExtraction {
+  return {
+    name: "Couldn't read",
+    brand: null,
+    description: null,
+    barcode: null,
+    category: null,
+    quantity: null,
+    quantityUnit: null,
+    weightValue: null,
+    weightUnit: null,
+    unitPrice: null,
+    linePrice: null,
+    currency: null,
+    origin: null,
+    rawText: message,
+  };
+}
+
+function failedReceipt(message: string): ReceiptExtraction {
+  return {
+    storeName: null,
+    storeLocation: null,
+    datetime: null,
+    isPartial: true,
+    portionHint: null,
+    items: [],
+    subtotal: null,
+    tax: null,
+    total: null,
+    currency: null,
+    rawText: `Couldn't read: ${message}`,
+  };
+}
+
+async function reprocessTripShots(
+  shots: ScanShot[],
+  engine: "byok" | "ppocr",
+): Promise<{ ok: number; fail: number; total: number }> {
+  const queue =
+    engine === "ppocr" ? shots.filter((s) => s.kind === "label") : [...shots];
+  if (queue.length === 0) {
+    throw new Error(engine === "ppocr" ? "No label photos on this trip" : "No photos on this trip");
+  }
+  if (engine === "byok") {
+    const llm = await getLlmConfig();
+    if (!llm.byokAvailable) {
+      throw new Error("Add a BYOK endpoint, model, and API key in Settings first");
+    }
+  }
+  let ok = 0;
+  let fail = 0;
+  const workers = engine === "ppocr" ? 1 : Math.min(3, queue.length);
+  const total = queue.length;
+  async function worker() {
+    while (queue.length) {
+      const shot = queue.shift();
+      if (!shot) return;
+      try {
+        const { image } = await getShotImage({ data: shot.id });
+        if (shot.kind === "receipt") {
+          const extracted = await readReceiptCapture(image, "byok");
+          if (shot.captureId) {
+            await updateReceiptCapture({ data: { captureId: shot.captureId, extracted } });
+          }
+          await updateScanShot({ data: { shotId: shot.id, lastRead: extracted } });
+        } else {
+          const extracted = await readLabelCapture(image, shot.barcode, engine);
+          const confidence = extractionConfidence(extracted);
+          if (shot.itemId) {
+            await updateItem({
+              data: {
+                itemId: shot.itemId,
+                patch: {
+                  name: extracted.name,
+                  brand: extracted.brand,
+                  description: extracted.description,
+                  barcode: extracted.barcode,
+                  category: extracted.category,
+                  quantity: extracted.quantity,
+                  quantityUnit: extracted.quantityUnit,
+                  weightValue: extracted.weightValue,
+                  weightUnit: extracted.weightUnit,
+                  unitPrice: extracted.unitPrice,
+                  linePrice: extracted.linePrice,
+                  rawText: extracted.rawText,
+                  matchConfidence: confidence,
+                },
+              },
+            });
+          }
+          await updateScanShot({
+            data: { shotId: shot.id, lastRead: extracted, itemId: shot.itemId ?? null },
+          });
+        }
+        ok += 1;
+      } catch (err) {
+        fail += 1;
+        const message = err instanceof Error ? err.message : "Could not read";
+        await updateScanShot({
+          data: {
+            shotId: shot.id,
+            lastRead: shot.kind === "receipt" ? failedReceipt(message) : failedLabel(message),
+          },
+        }).catch(() => undefined);
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: workers }, () => worker()));
+  return { ok, fail, total };
+}
 
 function TripPage() {
   const { tripId: tripIdParam } = Route.useParams();
@@ -72,6 +187,15 @@ function TripPage() {
       invalidate();
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not file trip"),
+  });
+
+  const reopen = useMutation({
+    mutationFn: () => reopenTrip({ data: tripId }),
+    onSuccess: () => {
+      toast.success("Trip reopened — you can edit and scan again");
+      invalidate();
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not reopen trip"),
   });
 
   const removeTrip = useMutation({
@@ -121,54 +245,30 @@ function TripPage() {
     onSuccess: invalidate,
   });
 
-  const reprocessSlips = useMutation({
-    mutationFn: async () => {
-      const photos = detailQuery.data?.shots ?? [];
-      const slips = photos.filter((s) => s.kind === "receipt");
-      if (slips.length === 0) throw new Error("No till slips on this trip");
-      const provider = visionProvider(loadScanSettings());
-      let ok = 0;
-      let fail = 0;
-      for (const shot of slips) {
-        try {
-          const { image } = await getShotImage({ data: shot.id });
-          const extracted = await readReceiptCapture(image, provider);
-          if (shot.captureId) {
-            await updateReceiptCapture({ data: { captureId: shot.captureId, extracted } });
-          }
-          await updateScanShot({ data: { shotId: shot.id, lastRead: extracted } });
-          ok += 1;
-        } catch (err) {
-          fail += 1;
-          const message = err instanceof Error ? err.message : "Could not read till slip";
-          await updateScanShot({
-            data: {
-              shotId: shot.id,
-              lastRead: {
-                storeName: null,
-                storeLocation: null,
-                datetime: null,
-                isPartial: true,
-                portionHint: null,
-                items: [],
-                subtotal: null,
-                tax: null,
-                total: null,
-                currency: null,
-                rawText: message,
-              },
-            },
-          }).catch(() => undefined);
-        }
-      }
-      return { ok, fail, total: slips.length };
-    },
+  const sendByok = useMutation({
+    mutationFn: () => reprocessTripShots(detailQuery.data?.shots ?? [], "byok"),
     onSuccess: (res) => {
-      if (res.fail === 0) toast.success(`Re-read ${res.ok} till slip${res.ok === 1 ? "" : "s"}`);
-      else toast.error(`Re-read ${res.ok} of ${res.total} — ${res.fail} failed`);
+      if (res.fail === 0) {
+        toast.success(`BYOK updated ${res.ok} photo${res.ok === 1 ? "" : "s"}`);
+      } else {
+        toast.error(`BYOK updated ${res.ok} of ${res.total} — ${res.fail} failed`);
+      }
       invalidate();
     },
-    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not reprocess slips"),
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not run BYOK"),
+  });
+
+  const sendPpocr = useMutation({
+    mutationFn: () => reprocessTripShots(detailQuery.data?.shots ?? [], "ppocr"),
+    onSuccess: (res) => {
+      if (res.fail === 0) {
+        toast.success(`PP-OCR updated ${res.ok} label${res.ok === 1 ? "" : "s"}`);
+      } else {
+        toast.error(`PP-OCR updated ${res.ok} of ${res.total} — ${res.fail} failed`);
+      }
+      invalidate();
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not run PP-OCR"),
   });
 
   if (!Number.isFinite(tripId)) {
@@ -239,40 +339,51 @@ function TripPage() {
       </dl>
 
       <div className="mt-6 flex flex-wrap gap-2">
-        {trip.status !== "complete" && (
-          <>
-            <Button asChild>
-              <Link to="/scan" search={{ tripId: trip.id, mode: "label" }}>
-                Scan labels
-              </Link>
+        <Button asChild>
+          <Link to="/scan" search={{ tripId: trip.id, mode: "label" }}>
+            Scan labels
+          </Link>
+        </Button>
+        <Button asChild variant="secondary">
+          <Link to="/scan" search={{ tripId: trip.id, mode: "receipt" }}>
+            Scan receipt
+          </Link>
+        </Button>
+        <Button
+          variant="accent"
+          disabled={collate.isPending || !canCollate}
+          onClick={() => collate.mutate()}
+        >
+          {collate.isPending ? "Collating…" : "Collate trip"}
+        </Button>
+        {photos.some((s) => s.kind === "label") && (
+          <Button
+            variant="secondary"
+            disabled={sendPpocr.isPending || sendByok.isPending}
+            onClick={() => sendPpocr.mutate()}
+          >
+            {sendPpocr.isPending ? "PP-OCR reading…" : "Reprocess labels with PP-OCR"}
+          </Button>
+        )}
+        {photos.length > 0 && (
+          <Button
+            variant="secondary"
+            disabled={sendByok.isPending || sendPpocr.isPending}
+            onClick={() => sendByok.mutate()}
+          >
+            {sendByok.isPending ? "BYOK reading…" : "Send all through BYOK"}
+          </Button>
+        )}
+        {trip.status === "complete" ? (
+          <Button variant="primary" onClick={() => reopen.mutate()} disabled={reopen.isPending}>
+            {reopen.isPending ? "Reopening…" : "Reopen trip"}
+          </Button>
+        ) : (
+          canFile && (
+            <Button variant="primary" onClick={() => finish.mutate()} disabled={finish.isPending}>
+              {finish.isPending ? "Filing…" : "File trip"}
             </Button>
-            <Button asChild variant="secondary">
-              <Link to="/scan" search={{ tripId: trip.id, mode: "receipt" }}>
-                Scan receipt
-              </Link>
-            </Button>
-            <Button
-              variant="accent"
-              disabled={collate.isPending || !canCollate}
-              onClick={() => collate.mutate()}
-            >
-              {collate.isPending ? "Collating…" : "Collate trip"}
-            </Button>
-            {receipts.length > 0 && (
-              <Button
-                variant="secondary"
-                disabled={reprocessSlips.isPending}
-                onClick={() => reprocessSlips.mutate()}
-              >
-                {reprocessSlips.isPending ? "Re-reading slips…" : "Reprocess till slips"}
-              </Button>
-            )}
-            {canFile && (
-              <Button variant="primary" onClick={() => finish.mutate()} disabled={finish.isPending}>
-                {finish.isPending ? "Filing…" : "File trip"}
-              </Button>
-            )}
-          </>
+          )
         )}
         <Button
           variant="ghost"
@@ -391,15 +502,13 @@ function TripPage() {
                   {cap.extracted?.items.length ?? 0} lines
                   {cap.extracted?.portionHint ? ` · ${cap.extracted.portionHint}` : ""}
                 </p>
-                {trip.status !== "complete" && (
-                  <button
-                    type="button"
-                    className="text-xs text-subtle hover:text-fg"
-                    onClick={() => removeCapture.mutate(cap.id)}
-                  >
-                    Remove
-                  </button>
-                )}
+                <button
+                  type="button"
+                  className="text-xs text-subtle hover:text-fg"
+                  onClick={() => removeCapture.mutate(cap.id)}
+                >
+                  Remove
+                </button>
               </li>
             ))}
           </ul>
@@ -422,14 +531,9 @@ function TripPage() {
                   item={item}
                   currency={trip.currency}
                   onMatch={setMatching}
-                  onEdit={trip.status === "complete" ? undefined : setEditing}
-                  onDelete={
-                    trip.status === "complete"
-                      ? undefined
-                      : (it) => removeItem.mutate(it.id)
-                  }
+                  onEdit={setEditing}
+                  onDelete={(it) => removeItem.mutate(it.id)}
                   onReprocess={
-                    trip.status === "complete" ||
                     !photos.some((s) => s.itemId === item.id)
                       ? undefined
                       : (it) => {
