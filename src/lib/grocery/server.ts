@@ -533,6 +533,60 @@ export const scanReceiptPhoto = createServerFn({ method: "POST" })
     });
   });
 
+export const scanLabelPhotos = createServerFn({ method: "POST" })
+  .validator(
+    (input: {
+      photos: { imageDataUrl: string; barcodeHint?: string | null }[];
+      detail?: "low" | "high";
+      provider?: LlmProvider;
+    }) => {
+      if (!Array.isArray(input.photos) || input.photos.length === 0) {
+        throw new Error("No photos to read");
+      }
+      if (input.photos.length > 10) throw new Error("Too many photos in one batch");
+      let total = 0;
+      for (const photo of input.photos) {
+        if (!photo.imageDataUrl) throw new Error("Photo is missing");
+        if (photo.imageDataUrl.length > 2_400_000) throw new Error("Photo is too large");
+        total += photo.imageDataUrl.length;
+      }
+      if (total > 8_000_000) throw new Error("Batch is too large — split the photos");
+      return input;
+    },
+  )
+  .handler(async ({ data }) => {
+    const { readLabelImages } = await import("./vision");
+    return readLabelImages(data.photos, {
+      detail: data.detail,
+      provider: data.provider ?? "local",
+    });
+  });
+
+export const scanReceiptPhotos = createServerFn({ method: "POST" })
+  .validator(
+    (input: { images: string[]; detail?: "low" | "high"; provider?: LlmProvider }) => {
+      if (!Array.isArray(input.images) || input.images.length === 0) {
+        throw new Error("No photos to read");
+      }
+      if (input.images.length > 8) throw new Error("Too many photos in one batch");
+      let total = 0;
+      for (const image of input.images) {
+        if (!image) throw new Error("Photo is missing");
+        if (image.length > 2_400_000) throw new Error("Photo is too large");
+        total += image.length;
+      }
+      if (total > 8_000_000) throw new Error("Batch is too large — split the photos");
+      return input;
+    },
+  )
+  .handler(async ({ data }) => {
+    const { readReceiptImages } = await import("./vision");
+    return readReceiptImages(data.images, {
+      detail: data.detail,
+      provider: data.provider ?? "local",
+    });
+  });
+
 export const addReceiptCapture = createServerFn({ method: "POST" })
   .validator(
     (input: {

@@ -27,7 +27,7 @@ import {
 } from "@/lib/grocery/server";
 import { money, statusLabel, tripDate } from "@/lib/grocery/format";
 import { extractionConfidence } from "@/lib/grocery/parse-local";
-import { readLabelCapture, readReceiptCapture } from "@/lib/grocery/read-capture";
+import { readLabelCapture, readLabelCaptureBatch, readReceiptCapture, readReceiptCaptureBatch } from "@/lib/grocery/read-capture";
 import { loadScanSettings } from "@/lib/grocery/settings";
 import type { LabelExtraction, ReceiptExtraction, ScanShot, TripItem } from "@/lib/grocery/types";
 
@@ -68,25 +68,131 @@ function failedReceipt(message: string): ReceiptExtraction {
   };
 }
 
-async function reprocessTripShots(
-  shots: ScanShot[],
-  engine: "byok" | "ppocr",
-): Promise<{ ok: number; fail: number; total: number }> {
-  const queue =
-    engine === "ppocr" ? shots.filter((s) => s.kind === "label") : [...shots];
-  if (queue.length === 0) {
-    throw new Error(engine === "ppocr" ? "No label photos on this trip" : "No photos on this trip");
+type ReprocessResult = { ok: number; fail: number; total: number; calls: number };
+
+async function applyLabelShot(shot: ScanShot, extracted: LabelExtraction) {
+  const confidence = extractionConfidence(extracted);
+  if (shot.itemId) {
+    await updateItem({
+      data: {
+        itemId: shot.itemId,
+        patch: {
+          name: extracted.name,
+          brand: extracted.brand,
+          description: extracted.description,
+          barcode: extracted.barcode,
+          category: extracted.category,
+          quantity: extracted.quantity,
+          quantityUnit: extracted.quantityUnit,
+          weightValue: extracted.weightValue,
+          weightUnit: extracted.weightUnit,
+          unitPrice: extracted.unitPrice,
+          linePrice: extracted.linePrice,
+          rawText: extracted.rawText,
+          matchConfidence: confidence,
+        },
+      },
+    });
   }
-  if (engine === "byok") {
-    const llm = await getLlmConfig();
-    if (!llm.byokAvailable) {
-      throw new Error("Add a BYOK endpoint, model, and API key in Settings first");
-    }
+  await updateScanShot({
+    data: { shotId: shot.id, lastRead: extracted, itemId: shot.itemId ?? null, barcode: extracted.barcode },
+  });
+}
+
+async function applyReceiptShot(shot: ScanShot, extracted: ReceiptExtraction) {
+  if (shot.captureId) {
+    await updateReceiptCapture({ data: { captureId: shot.captureId, extracted } });
   }
+  await updateScanShot({ data: { shotId: shot.id, lastRead: extracted } });
+}
+
+async function markShotFailed(shot: ScanShot, message: string) {
+  await updateScanShot({
+    data: {
+      shotId: shot.id,
+      lastRead: shot.kind === "receipt" ? failedReceipt(message) : failedLabel(message),
+    },
+  }).catch(() => undefined);
+}
+
+async function runByokLabelBatch(shots: ScanShot[]): Promise<ReprocessResult> {
+  if (shots.length === 0) return { ok: 0, fail: 0, total: 0, calls: 0 };
+  const loaded: { shot: ScanShot; image: string }[] = [];
+  for (const shot of shots) {
+    const { image } = await getShotImage({ data: shot.id });
+    loaded.push({ shot, image });
+  }
+  const { results, calls } = await readLabelCaptureBatch(
+    loaded.map((row) => ({ image: row.image, barcode: row.shot.barcode })),
+  );
   let ok = 0;
   let fail = 0;
-  const workers = engine === "ppocr" ? 1 : Math.min(3, queue.length);
+  let extraCalls = 0;
+  for (let i = 0; i < loaded.length; i += 1) {
+    const shot = loaded[i].shot;
+    const hit = results[i];
+    try {
+      if (hit?.ok) {
+        await applyLabelShot(shot, hit.data);
+        ok += 1;
+        continue;
+      }
+      extraCalls += 1;
+      const extracted = await readLabelCapture(loaded[i].image, shot.barcode, "byok", {
+        skipMemory: true,
+      });
+      await applyLabelShot(shot, extracted);
+      ok += 1;
+    } catch (err) {
+      fail += 1;
+      await markShotFailed(shot, err instanceof Error ? err.message : hit?.ok === false ? hit.error : "Could not read");
+    }
+  }
+  return { ok, fail, total: shots.length, calls: calls + extraCalls };
+}
+
+async function runByokReceiptBatch(shots: ScanShot[]): Promise<ReprocessResult> {
+  if (shots.length === 0) return { ok: 0, fail: 0, total: 0, calls: 0 };
+  const loaded: { shot: ScanShot; image: string }[] = [];
+  for (const shot of shots) {
+    const { image } = await getShotImage({ data: shot.id });
+    loaded.push({ shot, image });
+  }
+  const { results, calls } = await readReceiptCaptureBatch(loaded.map((row) => row.image));
+  let ok = 0;
+  let fail = 0;
+  let extraCalls = 0;
+  for (let i = 0; i < loaded.length; i += 1) {
+    const shot = loaded[i].shot;
+    const hit = results[i];
+    try {
+      if (hit?.ok) {
+        await applyReceiptShot(shot, hit.data);
+        ok += 1;
+        continue;
+      }
+      extraCalls += 1;
+      const extracted = await readReceiptCapture(loaded[i].image, "byok");
+      await applyReceiptShot(shot, extracted);
+      ok += 1;
+    } catch (err) {
+      fail += 1;
+      await markShotFailed(shot, err instanceof Error ? err.message : hit?.ok === false ? hit.error : "Could not read");
+    }
+  }
+  return { ok, fail, total: shots.length, calls: calls + extraCalls };
+}
+
+async function runShotQueue(
+  queueIn: ScanShot[],
+  engine: "byok" | "ppocr",
+  workers: number,
+): Promise<ReprocessResult> {
+  const queue = [...queueIn];
+  let ok = 0;
+  let fail = 0;
   const total = queue.length;
+  if (total === 0) return { ok: 0, fail: 0, total: 0, calls: 0 };
   async function worker() {
     while (queue.length) {
       const shot = queue.shift();
@@ -95,54 +201,63 @@ async function reprocessTripShots(
         const { image } = await getShotImage({ data: shot.id });
         if (shot.kind === "receipt") {
           const extracted = await readReceiptCapture(image, "byok");
-          if (shot.captureId) {
-            await updateReceiptCapture({ data: { captureId: shot.captureId, extracted } });
-          }
-          await updateScanShot({ data: { shotId: shot.id, lastRead: extracted } });
+          await applyReceiptShot(shot, extracted);
         } else {
-          const extracted = await readLabelCapture(image, shot.barcode, engine);
-          const confidence = extractionConfidence(extracted);
-          if (shot.itemId) {
-            await updateItem({
-              data: {
-                itemId: shot.itemId,
-                patch: {
-                  name: extracted.name,
-                  brand: extracted.brand,
-                  description: extracted.description,
-                  barcode: extracted.barcode,
-                  category: extracted.category,
-                  quantity: extracted.quantity,
-                  quantityUnit: extracted.quantityUnit,
-                  weightValue: extracted.weightValue,
-                  weightUnit: extracted.weightUnit,
-                  unitPrice: extracted.unitPrice,
-                  linePrice: extracted.linePrice,
-                  rawText: extracted.rawText,
-                  matchConfidence: confidence,
-                },
-              },
-            });
-          }
-          await updateScanShot({
-            data: { shotId: shot.id, lastRead: extracted, itemId: shot.itemId ?? null },
-          });
+          const extracted = await readLabelCapture(image, shot.barcode, engine, { skipMemory: true });
+          await applyLabelShot(shot, extracted);
         }
         ok += 1;
       } catch (err) {
         fail += 1;
-        const message = err instanceof Error ? err.message : "Could not read";
-        await updateScanShot({
-          data: {
-            shotId: shot.id,
-            lastRead: shot.kind === "receipt" ? failedReceipt(message) : failedLabel(message),
-          },
-        }).catch(() => undefined);
+        await markShotFailed(shot, err instanceof Error ? err.message : "Could not read");
       }
     }
   }
-  await Promise.all(Array.from({ length: workers }, () => worker()));
-  return { ok, fail, total };
+  await Promise.all(Array.from({ length: Math.max(1, workers) }, () => worker()));
+  return { ok, fail, total, calls: total };
+}
+
+async function reprocessTripShots(
+  shots: ScanShot[],
+  engine: "byok" | "ppocr",
+  onPhase?: (phase: "labels" | "receipts") => void,
+): Promise<ReprocessResult & { labels: ReprocessResult; receipts: ReprocessResult }> {
+  const labels = shots.filter((s) => s.kind === "label");
+  const receipts = engine === "ppocr" ? [] : shots.filter((s) => s.kind === "receipt");
+  if (engine === "ppocr" && labels.length === 0) {
+    throw new Error("No label photos on this trip");
+  }
+  if (engine === "byok" && labels.length === 0 && receipts.length === 0) {
+    throw new Error("No photos on this trip");
+  }
+  if (engine === "byok") {
+    const llm = await getLlmConfig();
+    if (!llm.byokAvailable) {
+      throw new Error("Add a BYOK endpoint, model, and API key in Settings first");
+    }
+  }
+  const empty = { ok: 0, fail: 0, total: 0, calls: 0 };
+  let labelRes = empty;
+  let receiptRes = empty;
+  if (labels.length) {
+    onPhase?.("labels");
+    labelRes =
+      engine === "byok"
+        ? await runByokLabelBatch(labels)
+        : await runShotQueue(labels, "ppocr", 1);
+  }
+  if (receipts.length) {
+    onPhase?.("receipts");
+    receiptRes = await runByokReceiptBatch(receipts);
+  }
+  return {
+    ok: labelRes.ok + receiptRes.ok,
+    fail: labelRes.fail + receiptRes.fail,
+    total: labelRes.total + receiptRes.total,
+    calls: labelRes.calls + receiptRes.calls,
+    labels: labelRes,
+    receipts: receiptRes,
+  };
 }
 
 function TripPage() {
@@ -155,6 +270,7 @@ function TripPage() {
   const [matching, setMatching] = useState<TripItem | null>(null);
   const [openShot, setOpenShot] = useState<ScanShot | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [byokPhase, setByokPhase] = useState<"labels" | "receipts" | null>(null);
 
   const detailQuery = useQuery({
     queryKey: ["trip", tripId],
@@ -246,16 +362,29 @@ function TripPage() {
   });
 
   const sendByok = useMutation({
-    mutationFn: () => reprocessTripShots(detailQuery.data?.shots ?? [], "byok"),
+    mutationFn: () =>
+      reprocessTripShots(detailQuery.data?.shots ?? [], "byok", (phase) => setByokPhase(phase)),
     onSuccess: (res) => {
+      const labelBit =
+        res.labels.total > 0
+          ? `${res.labels.ok} label${res.labels.ok === 1 ? "" : "s"}`
+          : null;
+      const slipBit =
+        res.receipts.total > 0
+          ? `${res.receipts.ok} till slip${res.receipts.ok === 1 ? "" : "s"}`
+          : null;
+      const summary = [labelBit, slipBit].filter(Boolean).join(", then ");
+      const calls = res.calls;
+      const callBit = `${calls} BYOK call${calls === 1 ? "" : "s"}`;
       if (res.fail === 0) {
-        toast.success(`BYOK updated ${res.ok} photo${res.ok === 1 ? "" : "s"}`);
+        toast.success(`BYOK updated ${summary} (${callBit})`);
       } else {
-        toast.error(`BYOK updated ${res.ok} of ${res.total} — ${res.fail} failed`);
+        toast.error(`BYOK updated ${summary} — ${res.fail} failed (${callBit})`);
       }
       invalidate();
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not run BYOK"),
+    onSettled: () => setByokPhase(null),
   });
 
   const sendPpocr = useMutation({
@@ -371,7 +500,13 @@ function TripPage() {
             disabled={sendByok.isPending || sendPpocr.isPending}
             onClick={() => sendByok.mutate()}
           >
-            {sendByok.isPending ? "BYOK reading…" : "Send all through BYOK"}
+            {byokPhase === "labels"
+              ? "BYOK reading labels…"
+              : byokPhase === "receipts"
+                ? "BYOK reading till slips…"
+                : sendByok.isPending
+                  ? "BYOK reading…"
+                  : "Labels, then till slips with BYOK"}
           </Button>
         )}
         {trip.status === "complete" ? (

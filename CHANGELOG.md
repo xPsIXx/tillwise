@@ -2,6 +2,13 @@
 
 All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
+## 0.3.8 — 2026-09-06
+
+- Scale-sticker names prefer the printed produce line (`Capsicum Yellow`, `Australian Carrots`) over store-logo OCR (`LuCug`).
+- BYOK reprocess uses the original photo (not the thumbnail), writes the new name onto the open shot, and ignores a previous bad name in memory.
+- Trip button **Labels, then till slips with BYOK** reads every label first, then every till slip.
+- Those BYOK runs batch photos into one vision call (up to 8 labels or 4 till slips per request) instead of one call per photo.
+
 ## 0.3.7 — 2026-08-31
 
 - Restore the v0.3.3 camera pipeline that already worked: `facingMode: ideal environment`, then unconstrained `{ video: true }`. No timeouts that abort `getUserMedia`, no front/rear label guessing.

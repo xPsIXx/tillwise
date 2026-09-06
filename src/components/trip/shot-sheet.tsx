@@ -20,7 +20,7 @@ import {
 } from "@/lib/grocery/server";
 import { loadScanSettings, READ_OPTIONS, type ReadMode } from "@/lib/grocery/settings";
 import type { LabelExtraction, ReceiptExtraction, ScanShot } from "@/lib/grocery/types";
-import { money, tripDate, unitMoney, weight } from "@/lib/grocery/format";
+import { extractionConfidence } from "@/lib/grocery/parse-local";
 import { tagForShot, tagTone } from "@/lib/grocery/shot-status";
 import { cn } from "@/lib/utils";
 
@@ -35,19 +35,26 @@ export function ShotSheet({
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [image, setImage] = useState<string | null>(shot.thumbnailData);
+  const [fullImage, setFullImage] = useState<string | null>(null);
   const [busy, setBusy] = useState<"read" | "save" | null>(null);
+  const [extract, setExtract] = useState(shot.lastRead);
   const [read, setRead] = useState<ReadMode>(() => {
     const cur = loadScanSettings().read;
-    if (shot.kind === "receipt") return cur === "byok" || cur === "grok" ? "byok" : "local";
+    if (shot.kind === "receipt") return "byok";
     return cur;
   });
-  const last = shot.lastRead;
+
+  useEffect(() => {
+    setExtract(shot.lastRead);
+  }, [shot.id, shot.lastRead]);
 
   useEffect(() => {
     let cancelled = false;
     void getShotImage({ data: shot.id })
       .then((res) => {
-        if (!cancelled) setImage(res.image);
+        if (cancelled) return;
+        setFullImage(res.image);
+        setImage(res.image);
       })
       .catch(() => {
         if (!cancelled) toast.error("Could not load the original photo");
@@ -65,17 +72,27 @@ export function ShotSheet({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  async function originalImage(): Promise<string> {
+    if (fullImage) return fullImage;
+    const res = await getShotImage({ data: shot.id });
+    setFullImage(res.image);
+    setImage(res.image);
+    return res.image;
+  }
+
   async function reprocess() {
-    if (!image) return;
     setBusy("read");
     try {
+      const src = await originalImage();
       if (shot.kind === "label") {
-        const data = await readLabelCapture(image, shot.barcode, read);
+        const data = await readLabelCapture(src, shot.barcode, read, { skipMemory: true });
         await applyLabel(data);
+        setExtract(data);
         toast.success(`Read ${data.name}`);
       } else {
-        const data = await readReceiptCapture(image, read === "byok" || read === "grok" ? "byok" : "local");
+        const data = await readReceiptCapture(src, read === "byok" || read === "grok" ? "byok" : "local");
         await applyReceipt(data);
+        setExtract(data);
         toast.success("Receipt re-read");
       }
       onChanged();
@@ -87,6 +104,7 @@ export function ShotSheet({
   }
 
   async function applyLabel(data: LabelExtraction) {
+    const confidence = extractionConfidence(data);
     if (shot.itemId) {
       await updateItem({
         data: {
@@ -103,7 +121,7 @@ export function ShotSheet({
             weightUnit: data.weightUnit,
             unitPrice: data.unitPrice,
             linePrice: data.linePrice,
-            matchStatus: "unmatched",
+            matchConfidence: confidence,
             rawText: data.rawText,
           },
         },
@@ -141,14 +159,17 @@ export function ShotSheet({
         data: { shotId: shot.id, imageData: next, thumbnailData: thumb },
       });
       setImage(next);
+      setFullImage(next);
       toast.success("Photo replaced — re-reading");
       setBusy("read");
       if (shot.kind === "label") {
-        const data = await readLabelCapture(next, shot.barcode, read);
+        const data = await readLabelCapture(next, shot.barcode, read, { skipMemory: true });
         await applyLabel(data);
+        setExtract(data);
       } else {
         const data = await readReceiptCapture(next, read === "byok" || read === "grok" ? "byok" : "local");
         await applyReceipt(data);
+        setExtract(data);
       }
       onChanged();
     } catch (err) {
@@ -171,6 +192,8 @@ export function ShotSheet({
     }
   }
 
+  const last = extract;
+  const taggedShot = { ...shot, lastRead: extract };
   const label = last && "name" in last ? last : null;
   const receipt = last && "items" in last ? last : null;
   const engines = shot.kind === "receipt" ? READ_OPTIONS.filter((o) => o.id === "local" || o.id === "byok") : READ_OPTIONS;
@@ -193,7 +216,7 @@ export function ShotSheet({
               {label?.name ?? receipt?.storeName ?? (shot.kind === "label" ? "Label" : "Till tape")}
             </h3>
             {(() => {
-              const tag = tagForShot(shot);
+              const tag = tagForShot(taggedShot);
               return (
                 <p className="mt-1">
                   <span

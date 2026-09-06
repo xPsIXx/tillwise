@@ -1,11 +1,12 @@
 import type { LabelExtraction, ProductMemory } from "./types";
-import { extractionIsThin } from "./parse-local";
+import { extractionIsThin, nameLooksWeak } from "./parse-local";
 
 export function fillFromMemory(data: LabelExtraction, mem: ProductMemory): LabelExtraction {
   const thin = extractionIsThin(data);
+  const memName = mem.name && !nameLooksWeak(mem.name) ? mem.name : null;
   return {
     ...data,
-    name: thin ? mem.name : data.name,
+    name: thin && memName ? memName : data.name,
     brand: data.brand ?? mem.brand,
     category: data.category ?? mem.category,
     unitPrice: data.unitPrice ?? mem.lastUnitPrice,

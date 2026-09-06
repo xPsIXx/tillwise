@@ -54,6 +54,18 @@ export async function publicImageToDataUrl(path: string): Promise<string> {
   return blobToDataUrl(blob, 960, 0.7);
 }
 
+/** Shrink a data URL until it fits the vision POST cap (server rejects > 2.4M chars). */
+export async function fitVisionImage(dataUrl: string, maxChars = 2_000_000): Promise<string> {
+  if (!dataUrl.startsWith("data:") || dataUrl.length <= maxChars) return dataUrl;
+  const img = await loadImage(dataUrl);
+  for (const side of [1400, 1100, 900, 720]) {
+    const canvas = imageToCanvas(img, side);
+    const next = canvas.toDataURL("image/jpeg", 0.84);
+    if (next.length <= maxChars) return next;
+  }
+  return imageToCanvas(img, 640).toDataURL("image/jpeg", 0.7);
+}
+
 export function captureCanvas(
   video: HTMLVideoElement,
   maxWidth = 1280,

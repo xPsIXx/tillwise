@@ -46,17 +46,29 @@ function num(raw: string | undefined): number | null {
 export function extractBarcode(raw: string, given: string | null): string | null {
   const hint = given?.replace(/\D/g, "") ?? "";
   if (hint.length >= 8 && hint.length <= 14) return hint;
+  const candidates: string[] = [];
+  const push = (digits: string) => {
+    if (digits.length >= 8 && digits.length <= 14 && !candidates.includes(digits)) {
+      candidates.push(digits);
+    }
+  };
   for (const line of raw.split(/\r?\n/)) {
-    const digits = line.replace(/\D/g, "");
-    if (digits.length >= 8 && digits.length <= 14) return digits;
+    // 0.788 and 12.95 must not concatenate into a fake code.
+    const withoutMoney = line.replace(/\d+[.,]\d+/g, " ");
+    push(withoutMoney.replace(/\D/g, ""));
+    for (const run of withoutMoney.match(/\d[\d\s-]{6,16}\d/g) ?? []) {
+      push(run.replace(/\D/g, ""));
+    }
   }
-  // Do not let "14.95" glue onto the barcode line through the decimal point.
   const runs = raw.match(/(?<![.\d])\d[\d\s-]{6,16}\d(?![.\d])/g) ?? [];
-  for (const run of runs) {
-    const digits = run.replace(/\D/g, "");
-    if (digits.length >= 8 && digits.length <= 14) return digits;
-  }
-  return null;
+  for (const run of runs) push(run.replace(/\D/g, ""));
+  return (
+    candidates.find((d) => d.length === 13) ??
+    candidates.find((d) => d.length === 12) ??
+    candidates.find((d) => d.length === 8) ??
+    candidates[0] ??
+    null
+  );
 }
 
 type UnitHit = { price: number; perKg: boolean };
@@ -237,35 +249,130 @@ function pickScaleCluster(raw: string): ScaleCluster | null {
   return scored[0].c;
 }
 
-function pickProductName(raw: string, foundBarcode: string | null): string {
-  const junkToken =
-    /^(weight|unit|price|expiry|date|prod|packed|on|barcode|scale|total|amount|lulu|carrefour|spinneys|waitrose|olaglle|jgl|item|net|wt|qty|plu)$/i;
-  const fieldish =
-    /weight|unit\s*price|expiry|prod\/?packed|barcode|الوزن|سعر|تاريخ|الوحدة/i;
+const FIELD_TOKEN =
+  /^(weight|unit|price|expiry|date|prod|packed|on|barcode|scale|total|amount|item|net|wt|qty|plu|id|aed|dhs|dirham|hyper|hypermarket|mart|llc|the)$/i;
+
+const FIELD_LINE =
+  /weight|unit\s*price|expiry|prod\/?packed|barcode|الوزن|سعر|تاريخ|الوحدة|packed\s*on|dirham/i;
+
+const STORE_NAMES = [
+  "lulu",
+  "carrefour",
+  "spinneys",
+  "waitrose",
+  "nesto",
+  "choithram",
+  "choithrams",
+  "unioncoop",
+  "almaya",
+  "luluhyper",
+  "luluhypermarket",
+];
+
+const PRODUCE_HINT =
+  /^(capsicum|pepper|peppers|carrot|carrots|onion|onions|tomato|tomatoes|potato|potatoes|apple|apples|banana|bananas|lettuce|cucumber|cauliflower|broccoli|grape|grapes|mango|mangoes|orange|oranges|lemon|lemons|lime|limes|garlic|ginger|cabbage|spinach|melon|watermelon|chicken|beef|lamb|milk|yogurt|yoghurt|cheese|bread|rice|beans|peas|corn|chilli|chili|pakchoi|pakchoy)$/i;
+
+function editDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  const m = a.length;
+  const n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  const dp = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i += 1) {
+    let prev = dp[0];
+    dp[0] = i;
+    for (let j = 1; j <= n; j += 1) {
+      const cur = dp[j];
+      dp[j] = a[i - 1] === b[j - 1] ? prev : 1 + Math.min(prev, dp[j], dp[j - 1]);
+      prev = cur;
+    }
+  }
+  return dp[n];
+}
+
+function foldToken(w: string): string {
+  return w.toLowerCase().replace(/[^a-z]/g, "");
+}
+
+export function isStoreToken(w: string): boolean {
+  const s = foldToken(w);
+  if (s.length < 3) return false;
+  if (STORE_NAMES.some((st) => s === st || (s.length >= 4 && st.startsWith(s)))) return true;
+  if (s.length >= 3 && s.length <= 6 && editDistance(s, "lulu") <= 2) return true;
+  if (s.length >= 6 && s.length <= 12 && editDistance(s, "carrefour") <= 3) return true;
+  return false;
+}
+
+export function nameLooksWeak(name: string): boolean {
+  const words = name
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (words.length === 0) return true;
+  if (words.length === 1 && (isStoreToken(words[0]) || /[a-z][A-Z]/.test(words[0]))) return true;
+  if (words.length === 1 && words[0].length < 5 && !PRODUCE_HINT.test(words[0])) return true;
+  return words.every((w) => isStoreToken(w) || FIELD_TOKEN.test(w));
+}
+
+function wordScore(w: string): number {
+  if (FIELD_TOKEN.test(w) || isStoreToken(w)) return -1;
+  if (!/^[A-Za-z][A-Za-z']+$/.test(w)) return -1;
+  if (!/[aeiouy]/i.test(w)) return -1;
+  if (w.length < 3) return -1;
+  if (/[a-z][A-Z]/.test(w)) return -1;
+  let score = 0;
+  if (w.length >= 6) score += 3;
+  else if (w.length >= 5) score += 2;
+  else if (w.length >= 4) score += 1;
+  else score -= 1;
+  if (/^[A-Z][a-z]+$/.test(w)) score += 2;
+  else if (/^[A-Z]{4,}$/.test(w)) score += 1;
+  else if (/^[a-z]+$/.test(w) && w.length < 5) score -= 1;
+  if (PRODUCE_HINT.test(w)) score += 4;
+  return score;
+}
+
+function scorePhrase(words: string[]): number {
+  const scores = words.map(wordScore);
+  if (scores.some((s) => s < 0)) return -1;
+  const sum = scores.reduce((a, b) => a + b, 0);
+  const bonus = words.length >= 2 ? 4 : words[0] && words[0].length >= 8 ? 2 : 0;
+  return sum + bonus;
+}
+
+/** Prefer the printed produce line over the store logo and field labels. */
+export function pickProductName(raw: string, foundBarcode: string | null): string {
+  const words = [...raw.matchAll(/[A-Za-z][A-Za-z']{1,}/g)].map((m) => m[0]);
+  let best = { score: 0, phrase: "" };
+  for (let i = 0; i < words.length; i += 1) {
+    for (let len = 1; len <= 4 && i + len <= words.length; len += 1) {
+      const slice = words.slice(i, i + len);
+      const score = scorePhrase(slice);
+      if (score > best.score) best = { score, phrase: slice.join(" ") };
+    }
+  }
+  if (best.phrase && best.score >= 3) return best.phrase.slice(0, 80);
+
   const lines = raw
     .split(/\r?\n/)
     .map((l) => l.replace(/\s+/g, " ").trim())
     .filter((l) => l.length > 1);
   for (const line of lines) {
-    if (fieldish.test(line) || /^\d+([.,]\d+)?(kg|g)?$/i.test(line)) continue;
+    if (FIELD_LINE.test(line) || /^\d+([.,]\d+)?(kg|g)?$/i.test(line)) continue;
     if (/\d{8,}/.test(line.replace(/\s/g, ""))) continue;
-    const words = [...line.matchAll(/\b[A-Za-z][A-Za-z']{2,}\b/g)]
+    const lineWords = [...line.matchAll(/\b[A-Za-z][A-Za-z']{2,}\b/g)]
       .map((m) => m[0])
-      .filter((w) => !junkToken.test(w) && /[aeiouy]/i.test(w));
-    if (words.length === 0) continue;
-    return words.slice(0, 6).join(" ");
+      .filter((w) => wordScore(w) >= 0);
+    if (lineWords.length === 0) continue;
+    const phrase = lineWords.slice(0, 4).join(" ");
+    if (phrase.length >= 3 && !nameLooksWeak(phrase)) return phrase.slice(0, 80);
   }
-  const run = raw.match(/(?:[A-Z][a-z']+(?:\s+|$)){1,6}/);
-  if (run) {
-    const phrase = run[0]
-      .trim()
-      .split(/\s+/)
-      .filter((w) => !junkToken.test(w))
-      .join(" ");
-    if (phrase.length >= 3) return phrase;
-  }
+
+  if (best.phrase.length >= 3) return best.phrase.slice(0, 80);
   return foundBarcode ? `Item ${foundBarcode}` : "Unknown item";
 }
+
 
 export function parseLabelText(raw: string, barcode: string | null): LabelExtraction {
   const flat = raw.replace(/[\r\n]+/g, " ");
@@ -358,7 +465,8 @@ export function extractionConfidence(data: LabelExtraction, ocrScore?: number): 
     data.name &&
     !/^unknown/i.test(data.name) &&
     !/^reading/i.test(data.name) &&
-    !/^item\s+\d/i.test(data.name)
+    !/^item\s+\d/i.test(data.name) &&
+    !nameLooksWeak(data.name)
   ) {
     score += 0.2;
   }

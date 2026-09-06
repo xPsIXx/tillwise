@@ -1,5 +1,5 @@
 import { resolveEndpoint } from "./llm";
-import { parseLabelText } from "./parse-local";
+import { parseLabelText, pickProductName, nameLooksWeak } from "./parse-local";
 import type {
   CollatedItem,
   CollationResult,
@@ -22,6 +22,7 @@ async function chat(opts: {
   detail?: "low" | "high";
   provider?: LlmProvider;
   task?: "vision" | "text";
+  timeoutMs?: number;
 }): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
   const provider = opts.provider ?? "local";
   let endpoint: Awaited<ReturnType<typeof resolveEndpoint>>;
@@ -36,10 +37,12 @@ async function chat(opts: {
 
   const detail = opts.detail ?? "high";
   const content: ChatContent[] = [];
-  for (const url of opts.images ?? []) {
+  const urls = opts.images ?? [];
+  for (let i = 0; i < urls.length; i += 1) {
+    if (urls.length > 1) content.push({ type: "text", text: `Image ${i + 1}:` });
     content.push({
       type: "image_url",
-      image_url: { url, detail },
+      image_url: { url: urls[i], detail },
     });
   }
   content.push({ type: "text", text: opts.prompt });
@@ -67,7 +70,7 @@ async function chat(opts: {
       method: "POST",
       headers,
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(endpoint.timeoutMs),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? endpoint.timeoutMs),
     });
 
   let res: Response;
@@ -127,12 +130,21 @@ function num(v: unknown): number | null {
 
 function asLabel(obj: Record<string, unknown>): LabelExtraction {
   const rawText = str(obj.raw_text) ?? str(obj.rawText) ?? "";
-  const fallback = rawText ? parseLabelText(rawText, str(obj.barcode)) : null;
+  const barcode = str(obj.barcode);
+  const fallback = rawText ? parseLabelText(rawText, barcode) : null;
+  const modelName = str(obj.name);
+  const parsedName = fallback?.name ?? pickProductName(rawText, barcode);
+  const name =
+    modelName && !nameLooksWeak(modelName) && !/^unknown/i.test(modelName)
+      ? modelName
+      : parsedName && !nameLooksWeak(parsedName)
+        ? parsedName
+        : modelName ?? parsedName ?? "Unknown item";
   return {
-    name: str(obj.name) ?? fallback?.name ?? "Unknown item",
+    name,
     brand: str(obj.brand),
     description: str(obj.description),
-    barcode: str(obj.barcode) ?? fallback?.barcode ?? null,
+    barcode: barcode ?? fallback?.barcode ?? null,
     category: str(obj.category),
     quantity: num(obj.quantity) ?? fallback?.quantity ?? null,
     quantityUnit: str(obj.quantity_unit) ?? str(obj.quantityUnit) ?? fallback?.quantityUnit ?? null,
@@ -182,23 +194,45 @@ function asReceipt(obj: Record<string, unknown>): ReceiptExtraction {
   };
 }
 
-export async function readLabelImage(
-  imageDataUrl: string,
-  opts?: { detail?: "low" | "high"; barcodeHint?: string | null; provider?: LlmProvider },
-): Promise<{ ok: true; data: LabelExtraction } | { ok: false; error: string }> {
-  const hint = opts?.barcodeHint
-    ? `A barcode was already read on-device as ${opts.barcodeHint}. Confirm it from the photo if visible.`
-    : "";
-  const result = await chat({
-    maxTokens: 900,
-    images: [imageDataUrl],
-    detail: opts?.detail ?? "high",
-    provider: opts?.provider ?? "local",
-    task: "vision",
-    prompt: `This is a photo of a grocery product: a produce scale sticker, packaged-goods label, shelf tag, or barcode.
-Extract what is actually printed. Prefer the scale sticker when both a bag and a sticker are visible.
-${hint}
-name MUST be the product wording printed on the sticker (e.g. Australian Carrots, Indian Onion, Cauliflower), including origin or variety. Do not collapse it to a generic common name. Never use the store logo, field labels (WEIGHT, UNIT PRICE, EXPIRY DATE), or garbled OCR.
+function parseJsonList(text: string, keys: string[]): Record<string, unknown>[] {
+  const obj = parseJson(text);
+  if (!obj) return [];
+  for (const key of keys) {
+    const arr = obj[key];
+    if (Array.isArray(arr)) {
+      return arr.filter((x): x is Record<string, unknown> => !!x && typeof x === "object");
+    }
+  }
+  if ("name" in obj || "store_name" in obj || "storeName" in obj) return [obj];
+  return [];
+}
+
+function placeByIndex<T>(
+  rows: Record<string, unknown>[],
+  count: number,
+  map: (row: Record<string, unknown>) => T,
+): (T | null)[] {
+  const slots: (T | null)[] = Array.from({ length: count }, () => null);
+  let cursor = 0;
+  for (const row of rows) {
+    const idx = num(row.index);
+    let at: number;
+    if (idx != null && idx >= 1 && idx <= count && slots[idx - 1] == null) {
+      at = idx - 1;
+    } else {
+      while (cursor < count && slots[cursor] != null) cursor += 1;
+      if (cursor >= count) break;
+      at = cursor;
+      cursor += 1;
+    }
+    slots[at] = map(row);
+  }
+  return slots;
+}
+
+const LABEL_RULES = `Extract what is actually printed. Prefer the scale sticker when both a bag and a sticker are visible.
+name MUST be the product wording printed on the sticker (e.g. Capsicum Yellow, Australian Carrots, Indian Onion), including origin or variety. Do not collapse it to a generic common name.
+NEVER use the store name or logo — LuLu, Carrefour, Spinneys, Waitrose — or OCR of those logos (LuCug, Lolo, Carref0ur). The English produce line sits under the Arabic line, above the WEIGHT / UNIT PRICE grid. Skip field labels: WEIGHT, UNIT PRICE, EXPIRY DATE, PROD/PACKED ON, الوزن, سعر الوحدة, تاريخ الانتهاء.
 GCC scale stickers (Lulu, Carrefour, Spinneys) are a grid:
 WEIGHT / الوزن = net kg; UNIT PRICE / سعر الوحدة = per-kg rate even when "/kg" is not printed; large number bottom-right = amount payable (weight × unit). Barcode digits sit along the bottom.
 Produce stickers usually show THREE numbers: net weight, unit price (per kg / per lb / per 100g), and line total.
@@ -206,40 +240,115 @@ Produce stickers usually show THREE numbers: net weight, unit price (per kg / pe
 - line_price = the amount charged for this pack (TOTAL / NET / bottom-right money).
 - barcode = the digits under the barcode or EAN/UPC printed on the sticker (8–14 digits, no spaces). Do not invent one.
 If only one money amount is printed next to /kg or PER KG, that is unit_price. If weight and total are present, you may compute unit_price = total / weight_in_kg.
-Return JSON with keys:
+Each label object keys:
 name, brand, description, barcode, category, quantity, quantity_unit, weight_value, weight_unit, unit_price, line_price, currency, origin, raw_text.
 weight_unit one of g, kg, lb, oz, ml, l or null.
 quantity_unit like ea, pack, bunch, carton, bottle or null.
-Prices are numbers only. Currency like AED, USD. raw_text is the visible text concatenated.`,
+Prices are numbers only. Currency like AED, USD. raw_text is the visible text concatenated.`;
+
+const RECEIPT_RULES = `Read every visible line even if the print is faint. If the receipt is cut off, set is_partial true and portion_hint to top, middle, or bottom.
+Each receipt object keys:
+store_name, store_location, datetime, is_partial, portion_hint, items, subtotal, tax, total, currency, raw_text.
+Each item: name, quantity, quantity_unit, weight_value, weight_unit, unit_price, line_price.
+unit_price is the per-unit or per-kg rate when printed (often next to weight); line_price is the charged amount.
+Ignore ads, loyalty points, and payment-card numbers. Prices are numbers.`;
+
+export async function readLabelImage(
+  imageDataUrl: string,
+  opts?: { detail?: "low" | "high"; barcodeHint?: string | null; provider?: LlmProvider },
+): Promise<{ ok: true; data: LabelExtraction } | { ok: false; error: string }> {
+  const batch = await readLabelImages(
+    [{ imageDataUrl, barcodeHint: opts?.barcodeHint }],
+    opts,
+  );
+  return batch[0] ?? { ok: false, error: "Could not parse the label." };
+}
+
+export async function readLabelImages(
+  photos: { imageDataUrl: string; barcodeHint?: string | null }[],
+  opts?: { detail?: "low" | "high"; provider?: LlmProvider },
+): Promise<Array<{ ok: true; data: LabelExtraction } | { ok: false; error: string }>> {
+  if (photos.length === 0) return [];
+  const hints = photos
+    .map((p, i) =>
+      p.barcodeHint
+        ? `Image ${i + 1}: a barcode was already read on-device as ${p.barcodeHint}. Confirm it from the photo if visible.`
+        : null,
+    )
+    .filter(Boolean)
+    .join("\n");
+  const n = photos.length;
+  const result = await chat({
+    maxTokens: Math.min(4000, 700 * n + 400),
+    images: photos.map((p) => p.imageDataUrl),
+    detail: opts?.detail ?? "high",
+    provider: opts?.provider ?? "local",
+    task: "vision",
+    timeoutMs: n > 1 ? 180_000 : undefined,
+    prompt: `You are given ${n} grocery label photo${n === 1 ? "" : "s"} (produce scale sticker, packaged-goods label, shelf tag, or barcode), in order as Image 1${n > 1 ? ` through Image ${n}` : ""}.
+${LABEL_RULES}
+${hints}
+Return JSON: { "items": [ { "index": 1, ...fields }, ... ] }
+items.length MUST equal ${n}. index is 1-based and matches the image number. One object per photo, even if a photo is unreadable (then name "Couldn't read" and nulls).`,
   });
-  if (!result.ok) return result;
-  const obj = parseJson(result.text);
-  if (!obj) return { ok: false, error: "Could not parse the label." };
-  return { ok: true, data: asLabel(obj) };
+  if (!result.ok) return photos.map(() => result);
+  if (n === 1) {
+    const obj = parseJson(result.text);
+    if (!obj) return [{ ok: false, error: "Could not parse the label." }];
+    const first = Array.isArray(obj.items) && obj.items[0] && typeof obj.items[0] === "object"
+      ? (obj.items[0] as Record<string, unknown>)
+      : obj;
+    return [{ ok: true, data: asLabel(first) }];
+  }
+  const rows = parseJsonList(result.text, ["items", "labels"]);
+  const slots = placeByIndex(rows, n, asLabel);
+  return slots.map((data) =>
+    data ? { ok: true as const, data } : { ok: false as const, error: "Could not parse the label." },
+  );
 }
 
 export async function readReceiptImage(
   imageDataUrl: string,
   opts?: { detail?: "low" | "high"; provider?: LlmProvider },
 ): Promise<{ ok: true; data: ReceiptExtraction } | { ok: false; error: string }> {
+  const batch = await readReceiptImages([imageDataUrl], opts);
+  return batch[0] ?? { ok: false, error: "Could not parse the receipt." };
+}
+
+export async function readReceiptImages(
+  imageDataUrls: string[],
+  opts?: { detail?: "low" | "high"; provider?: LlmProvider },
+): Promise<Array<{ ok: true; data: ReceiptExtraction } | { ok: false; error: string }>> {
+  if (imageDataUrls.length === 0) return [];
+  const n = imageDataUrls.length;
   const result = await chat({
-    maxTokens: 1400,
-    images: [imageDataUrl],
+    maxTokens: Math.min(5000, 1100 * n + 400),
+    images: imageDataUrls,
     detail: opts?.detail ?? "high",
     provider: opts?.provider ?? "local",
     task: "vision",
-    prompt: `This is a photo of a grocery receipt / till slip, possibly only a portion of a long tape.
-Read every visible line even if the print is faint. If the receipt is cut off, set is_partial true and portion_hint to top, middle, or bottom.
-Return JSON with keys:
-store_name, store_location, datetime, is_partial, portion_hint, items, subtotal, tax, total, currency, raw_text.
-Each item: name, quantity, quantity_unit, weight_value, weight_unit, unit_price, line_price.
-unit_price is the per-unit or per-kg rate when printed (often next to weight); line_price is the charged amount.
-Ignore ads, loyalty points, and payment-card numbers. Prices are numbers.`,
+    timeoutMs: n > 1 ? 180_000 : undefined,
+    prompt: `You are given ${n} grocery receipt / till slip photo${n === 1 ? "" : "s"}, in order as Image 1${n > 1 ? ` through Image ${n}` : ""}. Each photo may be only a portion of a long tape.
+${RECEIPT_RULES}
+Return JSON: { "receipts": [ { "index": 1, ...fields }, ... ] }
+receipts.length MUST equal ${n}. index is 1-based and matches the image number. One object per photo.`,
   });
-  if (!result.ok) return result;
-  const obj = parseJson(result.text);
-  if (!obj) return { ok: false, error: "Could not parse the receipt." };
-  return { ok: true, data: asReceipt(obj) };
+  if (!result.ok) return imageDataUrls.map(() => result);
+  if (n === 1) {
+    const obj = parseJson(result.text);
+    if (!obj) return [{ ok: false, error: "Could not parse the receipt." }];
+    const first = Array.isArray(obj.receipts) && obj.receipts[0] && typeof obj.receipts[0] === "object"
+      ? (obj.receipts[0] as Record<string, unknown>)
+      : obj;
+    return [{ ok: true, data: asReceipt(first) }];
+  }
+  const rows = parseJsonList(result.text, ["receipts"]);
+  const slots = placeByIndex(rows, n, asReceipt);
+  return slots.map((data) =>
+    data
+      ? { ok: true as const, data }
+      : { ok: false as const, error: "Could not parse the receipt." },
+  );
 }
 
 export async function stitchReceipts(
