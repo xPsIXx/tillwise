@@ -1,5 +1,6 @@
 {
   "name": "tillwise",
+  "version": "0.3.13",
   "private": true,
   "sideEffects": false,
   "type": "module",

@@ -19,7 +19,9 @@ import {
   getLlmConfig,
   getShotImage,
   getTrip,
+  logAppEvent,
   reopenTrip,
+  troubleshootTrip,
   updateItem,
   updateReceiptCapture,
   updateScanShot,
@@ -271,6 +273,8 @@ function TripPage() {
   const [openShot, setOpenShot] = useState<ScanShot | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [byokPhase, setByokPhase] = useState<"labels" | "receipts" | null>(null);
+  const [diagnosis, setDiagnosis] = useState<string | null>(null);
+  const [report, setReport] = useState<string | null>(null);
 
   const detailQuery = useQuery({
     queryKey: ["trip", tripId],
@@ -294,6 +298,21 @@ function TripPage() {
       invalidate();
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not collate"),
+  });
+
+  const help = useMutation({
+    mutationFn: (scope: "trip" | "full") => {
+      const settings = loadScanSettings();
+      return troubleshootTrip({
+        data: { tripId, scope, provider: settings.collate, settings },
+      });
+    },
+    onSuccess: (res) => {
+      setDiagnosis(res.diagnosis);
+      setReport(res.report);
+      toast.success("Report ready — copy it and paste into the Tillwise chat.");
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not ask the model"),
   });
 
   const finish = useMutation({
@@ -381,6 +400,14 @@ function TripPage() {
       } else {
         toast.error(`BYOK updated ${summary} — ${res.fail} failed (${callBit})`);
       }
+      void logAppEvent({
+        data: {
+          action: "reprocessByok",
+          ok: res.fail === 0,
+          tripId,
+          detail: `${summary}; ${callBit}; fail ${res.fail}`,
+        },
+      });
       invalidate();
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not run BYOK"),
@@ -395,6 +422,14 @@ function TripPage() {
       } else {
         toast.error(`PP-OCR updated ${res.ok} of ${res.total} — ${res.fail} failed`);
       }
+      void logAppEvent({
+        data: {
+          action: "reprocessLabelsPpocr",
+          ok: res.fail === 0,
+          tripId,
+          detail: `${res.ok}/${res.total} ok, ${res.fail} fail`,
+        },
+      });
       invalidate();
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not run PP-OCR"),
@@ -509,6 +544,20 @@ function TripPage() {
                   : "Labels, then till slips with BYOK"}
           </Button>
         )}
+        <Button
+          variant="secondary"
+          disabled={help.isPending}
+          onClick={() => help.mutate("trip")}
+        >
+          {help.isPending && help.variables !== "full" ? "Sending…" : "Debug this trip"}
+        </Button>
+        <Button
+          variant="secondary"
+          disabled={help.isPending}
+          onClick={() => help.mutate("full")}
+        >
+          {help.isPending && help.variables === "full" ? "Sending…" : "Full debug"}
+        </Button>
         {trip.status === "complete" ? (
           <Button variant="primary" onClick={() => reopen.mutate()} disabled={reopen.isPending}>
             {reopen.isPending ? "Reopening…" : "Reopen trip"}
@@ -586,6 +635,41 @@ function TripPage() {
           </Button>
         )}
       </div>
+
+      {diagnosis && (
+        <section className="mt-6 rounded-2xl bg-surface p-5 shadow-[var(--shadow-border)]">
+          <h2 className="font-display text-2xl">Troubleshooting</h2>
+          <p className="mt-1 text-sm text-muted">
+            Full cart, till-slip text, photo tags, settings, and ledger facts were sent — not the
+            pictures, not your API key. Copy the report and paste it here.
+          </p>
+          <p className="mt-4 whitespace-pre-wrap text-sm leading-relaxed">{diagnosis}</p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Button
+              type="button"
+              onClick={() => {
+                const text = report ?? diagnosis;
+                void navigator.clipboard.writeText(text).then(
+                  () => toast.success("Copied. Paste it into the Tillwise chat."),
+                  () => toast.error("Could not copy"),
+                );
+              }}
+            >
+              Copy report
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setDiagnosis(null);
+                setReport(null);
+              }}
+            >
+              Dismiss
+            </Button>
+          </div>
+        </section>
+      )}
 
       {photos.length > 0 && (
         <section className="mt-8">

@@ -181,8 +181,6 @@ function SettingsPage() {
         your local server, or a BYOK API.
       </p>
 
-      <LedgerPanel />
-
       {engine && (
         <div className="mt-5 rounded-xl bg-surface px-4 py-3 shadow-[var(--shadow-border)]">
           <p className={engine.error ? "text-sm text-red-600" : "text-sm"}>{engine.label}</p>
@@ -518,6 +516,8 @@ function SettingsPage() {
           />
         </dl>
       </section>
+
+      <LedgerPanel />
     </main>
   );
 }

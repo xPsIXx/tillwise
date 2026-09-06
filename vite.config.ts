@@ -176,6 +176,53 @@ function ppocrProxyPlugin(): Plugin {
   };
 }
 
+function mediaPhotosPlugin(): Plugin {
+  return {
+    name: "tillwise:media-photos",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use(async (req, res, next) => {
+        try {
+          const pathOnly = (req.url ?? "").split("?", 1)[0] ?? "";
+          if (!pathOnly.startsWith("/media/")) {
+            next();
+            return;
+          }
+          const method = (req.method ?? "GET").toUpperCase();
+          if (method !== "GET" && method !== "HEAD") {
+            res.statusCode = 405;
+            res.end("Method Not Allowed");
+            return;
+          }
+          const mod = (await server.ssrLoadModule("/src/lib/media-serve.ts")) as {
+            handleMediaRequest: (pathname: string) => Promise<Response | null>;
+          };
+          const response = await mod.handleMediaRequest(pathOnly);
+          if (!response) {
+            next();
+            return;
+          }
+          res.statusCode = response.status;
+          response.headers.forEach((value, key) => {
+            res.setHeader(key, value);
+          });
+          if (method === "HEAD") {
+            res.end();
+            return;
+          }
+          res.end(Buffer.from(await response.arrayBuffer()));
+        } catch (err) {
+          console.error("[media] serve failed:", err);
+          if (!res.headersSent) {
+            res.statusCode = 500;
+            res.end("media failed");
+          }
+        }
+      });
+    },
+  };
+}
+
 /** CORP so wasm/models can load from the preview iframe. No COEP — it blocks getUserMedia. */
 function isolationHeadersPlugin(): Plugin {
   return {
@@ -216,6 +263,7 @@ export default defineConfig(({ command, isPreview }) => ({
     pgliteBootstrapPlugin(),
     authPopupPlugin(),
     ppocrProxyPlugin(),
+    mediaPhotosPlugin(),
     appEnvPlugin(),
     grokPwaPlugin(),
     tailwindcss(),

@@ -29,7 +29,7 @@ ENV NODE_ENV=production \
 RUN apt-get update \
   && apt-get install -y --no-install-recommends curl ca-certificates gosu \
   && rm -rf /var/lib/apt/lists/* \
-  && mkdir -p /data/pglite \
+  && mkdir -p /data/pglite /data/photos /data/logs \
   && chown -R node:node /data /app
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

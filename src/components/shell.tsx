@@ -1,6 +1,7 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import { BarChart3, House, Images, ReceiptText, ScanLine, SlidersHorizontal } from "lucide-react";
 import { PwaInstall } from "@/components/pwa-install";
+import { APP_VERSION } from "@/lib/version";
 import { cn } from "@/lib/utils";
 
 const NAV = [
@@ -20,7 +21,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <span className="grid size-8 place-items-center rounded-md bg-fg">
               <ReceiptMark />
             </span>
-            <span className="font-display text-lg tracking-tight">Tillwise</span>
+            <span className="leading-tight">
+              <span className="block font-display text-lg tracking-tight">Tillwise</span>
+              <span className="block text-xs text-subtle">v{APP_VERSION}</span>
+            </span>
           </Link>
           <div className="flex items-center gap-1">
             <PwaInstall />

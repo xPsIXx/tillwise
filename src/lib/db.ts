@@ -224,10 +224,19 @@ async function createPgliteSql(): Promise<Sql> {
   globalRef.__pgliteMigrateChain__ = pass;
   await pass;
 
-  return toSql(async <T>(text: string, params: unknown[]) => {
+  const sql = toSql(async <T>(text: string, params: unknown[]) => {
     const result = await pg.query<T>(text, params);
     return result.rows;
   });
+
+  try {
+    const { migratePhotosOutOfDb } = await import("@/lib/grocery/photo-migrate");
+    await migratePhotosOutOfDb(sql);
+  } catch (err) {
+    console.error("[photos] migrate", err);
+  }
+
+  return sql;
 }
 
 async function createSql(): Promise<Sql> {
@@ -268,6 +277,17 @@ export async function getPglite(): Promise<import("@electric-sql/pglite").PGlite
   const pg = await globalRef.__pgliteInstance__;
   if (!pg) throw new Error("PGLite instance failed to initialize");
   return pg;
+}
+
+/** Copy WAL into the main files so an Unraid kill does not rewind the last session. */
+export async function checkpointLedger(): Promise<void> {
+  if (dbSource !== "pglite" || ledgerFrozen) return;
+  try {
+    const pg = await getPglite();
+    await pg.exec("CHECKPOINT");
+  } catch (err) {
+    console.warn("[db] checkpoint failed", err);
+  }
 }
 
 /**

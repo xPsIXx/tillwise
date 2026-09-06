@@ -1,5 +1,19 @@
 import { createServerFn } from "@tanstack/react-start";
-import { getSql } from "@/lib/db";
+import { checkpointLedger, getSql } from "@/lib/db";
+import { recordAction, readActions } from "@/lib/action-log";
+import {
+  asFileRef,
+  isDataUrl,
+  itemThumbUrl,
+  receiptThumbUrl,
+  shotThumbUrl,
+  writeItemThumb,
+  writeReceiptThumb,
+  writeShotImage,
+  writeShotThumb,
+  removeFileRef,
+} from "@/lib/photo-store";
+import { storedToDataUrl } from "@/lib/media-serve";
 import { canonicalGuess, nameKey as catalogKey, parseReceiptDate, perUnitPrice } from "./catalog";
 import type {
   CanonicalProduct,
@@ -99,7 +113,7 @@ function mapShot(row: ShotRow): ScanShot {
     id: Number(row.id),
     tripId: Number(row.trip_id),
     kind: row.kind === "receipt" ? "receipt" : "label",
-    thumbnailData: row.thumbnail_data,
+    thumbnailData: row.thumbnail_data ? shotThumbUrl(Number(row.id)) : null,
     barcode: row.barcode,
     itemId: row.item_id != null ? Number(row.item_id) : null,
     captureId: row.capture_id != null ? Number(row.capture_id) : null,
@@ -181,7 +195,7 @@ function mapItem(row: ItemRow): TripItem {
     linePrice: n(row.line_price),
     currency: row.currency,
     rawText: row.raw_text,
-    thumbnailData: row.thumbnail_data,
+    thumbnailData: row.thumbnail_data ? itemThumbUrl(Number(row.id)) : null,
     matchStatus: (row.match_status as TripItem["matchStatus"]) || "unmatched",
     matchConfidence: n(row.match_confidence),
     createdAt: iso(row.created_at),
@@ -204,7 +218,7 @@ function mapReceipt(row: ReceiptRow): ReceiptCapture {
     tripId: Number(row.trip_id),
     sequence: Number(row.sequence),
     extracted,
-    thumbnailData: row.thumbnail_data,
+    thumbnailData: row.thumbnail_data ? receiptThumbUrl(Number(row.id)) : null,
     createdAt: iso(row.created_at),
   };
 }
@@ -292,7 +306,10 @@ export const createTrip = createServerFn({ method: "POST" })
     `;
     const row = rows[0];
     if (!row) throw new Error("Could not start trip");
-    return mapTrip({ ...row, item_count: 0, label_count: 0, receipt_capture_count: 0 });
+    const trip = mapTrip({ ...row, item_count: 0, label_count: 0, receipt_capture_count: 0 });
+    recordAction({ action: "createTrip", ok: true, tripId: trip.id, detail: storeName ?? "unnamed" });
+    await checkpointLedger();
+    return trip;
   });
 
 export const updateTrip = createServerFn({ method: "POST" })
@@ -332,7 +349,19 @@ export const deleteTrip = createServerFn({ method: "POST" })
   .validator((tripId: number) => tripId)
   .handler(async ({ data: tripId }): Promise<{ ok: true }> => {
     const sql = await getSql();
+    const blobs = await sql<{ ref: string | null }>`
+      select image_data as ref from scan_shots where trip_id = ${tripId}
+      union all
+      select thumbnail_data from scan_shots where trip_id = ${tripId}
+      union all
+      select thumbnail_data from trip_items where trip_id = ${tripId}
+      union all
+      select thumbnail_data from receipt_captures where trip_id = ${tripId}
+    `;
+    for (const row of blobs) removeFileRef(row.ref);
     await sql`delete from trips where id = ${tripId}`;
+    recordAction({ action: "deleteTrip", ok: true, tripId });
+    await checkpointLedger();
     return { ok: true };
   });
 
@@ -368,7 +397,7 @@ export const addLabelItem = createServerFn({ method: "POST" })
     if (!trip) throw new Error("Trip not found");
     const sql = await getSql();
     const e = extractionToInsert(data.extracted);
-    const thumb = data.thumbnailData ?? null;
+    const thumbIn = data.thumbnailData ?? null;
     const rows = await sql<ItemRow>`
       insert into trip_items (
         user_id, trip_id, source, name, brand, description, barcode, category,
@@ -378,7 +407,7 @@ export const addLabelItem = createServerFn({ method: "POST" })
         ${OWNER}, ${data.tripId}, 'label', ${e.name}, ${e.brand},
         ${e.description}, ${e.barcode}, ${e.category}, ${e.quantity}, ${e.quantityUnit},
         ${e.weightValue}, ${e.weightUnit}, ${e.unitPrice}, ${e.linePrice},
-        ${e.currency}, ${e.rawText}, ${thumb}, ${data.matchStatus ?? "unmatched"}
+        ${e.currency}, ${e.rawText}, ${null}, ${data.matchStatus ?? "unmatched"}
       )
       returning id, trip_id, source, name, brand, description, barcode, category,
                 quantity, quantity_unit, weight_value, weight_unit, unit_price, line_price,
@@ -386,7 +415,13 @@ export const addLabelItem = createServerFn({ method: "POST" })
     `;
     const row = rows[0];
     if (!row) throw new Error("Could not save item");
+    if (thumbIn && isDataUrl(thumbIn)) {
+      const ref = writeItemThumb(Number(row.id), thumbIn);
+      await sql`update trip_items set thumbnail_data = ${ref} where id = ${row.id}`;
+      row.thumbnail_data = ref;
+    }
     const item = mapItem(row);
+    recordAction({ action: "addLabelItem", ok: true, tripId: data.tripId, detail: e.name });
     await rememberProduct(sql, item, trip.storeName);
     const productId = await resolveCanonical(sql, {
       name: item.name,
@@ -606,10 +641,10 @@ export const addReceiptCapture = createServerFn({ method: "POST" })
     `;
     const sequence = (n(seqRows[0]?.max) ?? -1) + 1;
     const json = JSON.stringify(data.extracted);
-    const thumb = data.thumbnailData ?? null;
+    const thumbIn = data.thumbnailData ?? null;
     const rows = await sql<ReceiptRow>`
       insert into receipt_captures (user_id, trip_id, sequence, extracted_json, thumbnail_data)
-      values (${OWNER}, ${data.tripId}, ${sequence}, ${json}, ${thumb})
+      values (${OWNER}, ${data.tripId}, ${sequence}, ${json}, ${null})
       returning id, trip_id, sequence, extracted_json, thumbnail_data, created_at
     `;
     if (trip.status === "shopping") {
@@ -619,7 +654,14 @@ export const addReceiptCapture = createServerFn({ method: "POST" })
       `;
     }
     if (!rows[0]) throw new Error("Could not save receipt");
+    if (thumbIn && isDataUrl(thumbIn)) {
+      const ref = writeReceiptThumb(Number(rows[0].id), thumbIn);
+      await sql`update receipt_captures set thumbnail_data = ${ref} where id = ${rows[0].id}`;
+      rows[0].thumbnail_data = ref;
+    }
     await applyReceiptMeta(sql, data.tripId, data.extracted);
+    recordAction({ action: "addReceiptCapture", ok: true, tripId: data.tripId, detail: `seq ${sequence}` });
+    await checkpointLedger();
     return mapReceipt(rows[0]);
   });
 
@@ -798,6 +840,13 @@ export const collateTrip = createServerFn({ method: "POST" })
 
     const next = await loadTrip(tripId);
     if (!next) throw new Error("Trip not found");
+    recordAction({
+      action: "collateTrip",
+      ok: true,
+      tripId,
+      detail: `${collated.data.items.length} lines, total ${collated.data.total ?? "?"} ${collated.usedLocalCollate ? "local-fallback" : "llm"}`,
+    });
+    await checkpointLedger();
     return {
       trip: next,
       items: await loadItems(tripId),
@@ -821,11 +870,15 @@ async function insertMerged(
       ${OWNER}, ${tripId}, 'merged', ${item.name}, ${item.brand}, ${item.description},
       ${item.barcode}, ${item.category}, ${item.quantity}, ${item.quantityUnit},
       ${item.weightValue}, ${item.weightUnit}, ${item.unitPrice}, ${item.linePrice},
-      ${item.currency}, ${item.thumbnailData}, ${item.matchStatus}, ${item.matchConfidence}
+      ${item.currency}, ${asFileRef(item.thumbnailData) && !isDataUrl(item.thumbnailData) ? asFileRef(item.thumbnailData) : null}, ${item.matchStatus}, ${item.matchConfidence}
     )
     returning id
   `;
   const id = Number(rows[0]?.id ?? 0);
+  if (id && item.thumbnailData && isDataUrl(item.thumbnailData)) {
+    const ref = writeItemThumb(id, item.thumbnailData);
+    await sql`update trip_items set thumbnail_data = ${ref} where id = ${id}`;
+  }
   const productId = await resolveCanonical(sql, {
     name: item.name,
     brand: item.brand,
@@ -866,13 +919,31 @@ export const addScanShot = createServerFn({ method: "POST" })
       insert into scan_shots (
         user_id, trip_id, kind, image_data, thumbnail_data, barcode, item_id, capture_id, last_read_json
       ) values (
-        ${OWNER}, ${data.tripId}, ${data.kind}, ${data.imageData}, ${data.thumbnailData ?? null},
+        ${OWNER}, ${data.tripId}, ${data.kind}, ${"pending"}, ${data.thumbnailData ? "pending" : null},
         ${data.barcode ?? null}, ${data.itemId ?? null}, ${data.captureId ?? null}, ${json}
       )
       returning id, trip_id, kind, thumbnail_data, barcode, item_id, capture_id, last_read_json, created_at
     `;
     if (!rows[0]) throw new Error("Could not save photo");
-    return mapShot(rows[0]);
+    const id = Number(rows[0].id);
+    try {
+      const imageRef = isDataUrl(data.imageData) ? writeShotImage(id, data.imageData) : data.imageData;
+      const thumbRef =
+        data.thumbnailData && isDataUrl(data.thumbnailData)
+          ? writeShotThumb(id, data.thumbnailData)
+          : data.thumbnailData ?? null;
+      await sql`
+        update scan_shots
+           set image_data = ${imageRef}, thumbnail_data = ${thumbRef}
+         where id = ${id}
+      `;
+      recordAction({ action: "addScanShot", ok: true, tripId: data.tripId, detail: `${data.kind} #${id}` });
+      await checkpointLedger();
+      return mapShot({ ...rows[0], thumbnail_data: thumbRef });
+    } catch (err) {
+      recordAction({ action: "addScanShot", ok: false, tripId: data.tripId, detail: String(err) });
+      throw err;
+    }
   });
 
 export const updateScanShot = createServerFn({ method: "POST" })
@@ -904,14 +975,22 @@ export const updateScanShot = createServerFn({ method: "POST" })
           ? JSON.stringify(data.lastRead)
           : null;
     const thumb = data.thumbnailData === undefined ? row.thumbnail_data : data.thumbnailData;
+    let storedImage: string | undefined;
+    let storedThumb = thumb;
+    if (data.imageData && isDataUrl(data.imageData)) {
+      storedImage = writeShotImage(data.shotId, data.imageData);
+    }
+    if (thumb && isDataUrl(thumb)) {
+      storedThumb = writeShotThumb(data.shotId, thumb);
+    }
     const barcode = data.barcode === undefined ? row.barcode : data.barcode;
     const itemId = data.itemId === undefined ? row.item_id : data.itemId;
     const captureId = data.captureId === undefined ? row.capture_id : data.captureId;
-    const rows = data.imageData
+    const rows = storedImage
       ? await sql<ShotRow>`
           update scan_shots
-             set image_data = ${data.imageData},
-                 thumbnail_data = ${thumb},
+             set image_data = ${storedImage},
+                 thumbnail_data = ${storedThumb},
                  barcode = ${barcode},
                  item_id = ${itemId},
                  capture_id = ${captureId},
@@ -921,7 +1000,7 @@ export const updateScanShot = createServerFn({ method: "POST" })
         `
       : await sql<ShotRow>`
           update scan_shots
-             set thumbnail_data = ${thumb},
+             set thumbnail_data = ${storedThumb},
                  barcode = ${barcode},
                  item_id = ${itemId},
                  capture_id = ${captureId},
@@ -945,14 +1024,23 @@ export const getShotImage = createServerFn({ method: "POST" })
     `;
     const row = rows[0];
     if (!row) throw new Error("Photo not found");
-    return { image: row.image_data, shot: mapShot(row) };
+    const image = (await storedToDataUrl(row.image_data)) ?? row.image_data;
+    return { image, shot: mapShot(row) };
   });
 
 export const deleteScanShot = createServerFn({ method: "POST" })
   .validator((shotId: number) => shotId)
   .handler(async ({ data: shotId }): Promise<{ ok: true }> => {
     const sql = await getSql();
+    const existing = await sql<{ image_data: string; thumbnail_data: string | null }>`
+      select image_data, thumbnail_data from scan_shots where id = ${shotId} limit 1
+    `;
+    if (existing[0]) {
+      removeFileRef(existing[0].image_data);
+      removeFileRef(existing[0].thumbnail_data);
+    }
     await sql`delete from scan_shots where id = ${shotId}`;
+    recordAction({ action: "deleteScanShot", ok: true, detail: `shot ${shotId}` });
     return { ok: true };
   });
 
@@ -987,6 +1075,8 @@ export const completeTrip = createServerFn({ method: "POST" })
     for (const item of items) {
       await rememberProduct(sql, item, trip.storeName);
     }
+    recordAction({ action: "fileTrip", ok: true, tripId, detail: trip.storeName ?? "" });
+    await checkpointLedger();
     return trip;
   });
 
@@ -1002,6 +1092,8 @@ export const reopenTrip = createServerFn({ method: "POST" })
     `;
     const trip = await loadTrip(tripId);
     if (!trip) throw new Error("Trip not found");
+    recordAction({ action: "reopenTrip", ok: true, tripId });
+    await checkpointLedger();
     return trip;
   });
 
@@ -1680,6 +1772,196 @@ export const getGroceryAnalytics = createServerFn({ method: "GET" }).handler(
   },
 );
 
+async function loadFullDebugDump() {
+  const sql = await getSql();
+  const trips = await sql.query<{
+    id: number;
+    store_name: string | null;
+    store_location: string | null;
+    started_at: unknown;
+    completed_at: unknown;
+    status: string;
+    receipt_subtotal: unknown;
+    receipt_tax: unknown;
+    receipt_total: unknown;
+    currency: string;
+    notes: string | null;
+  }>(
+    `select id, store_name, store_location, started_at, completed_at, status,
+            receipt_subtotal, receipt_tax, receipt_total, currency, notes
+       from trips order by started_at desc`,
+  );
+  const items = await sql.query<{
+    id: number;
+    trip_id: number;
+    source: string;
+    name: string;
+    brand: string | null;
+    barcode: string | null;
+    quantity: unknown;
+    quantity_unit: string | null;
+    weight_value: unknown;
+    weight_unit: string | null;
+    unit_price: unknown;
+    line_price: unknown;
+    match_status: string;
+    match_confidence: unknown;
+    raw_text: string | null;
+  }>(
+    `select id, trip_id, source, name, brand, barcode, quantity, quantity_unit,
+            weight_value, weight_unit, unit_price, line_price, match_status,
+            match_confidence, raw_text
+       from trip_items order by trip_id, id`,
+  );
+  const receipts = await sql.query<{
+    id: number;
+    trip_id: number;
+    sequence: number;
+    extracted_json: string | null;
+  }>(`select id, trip_id, sequence, extracted_json from receipt_captures order by trip_id, sequence`);
+  const shots = await sql.query<{
+    id: number;
+    trip_id: number;
+    kind: string;
+    barcode: string | null;
+    item_id: number | null;
+    capture_id: number | null;
+    last_read_json: string | null;
+    created_at: unknown;
+    image_chars: number;
+    thumb_chars: number;
+  }>(
+    `select id, trip_id, kind, barcode, item_id, capture_id, last_read_json, created_at,
+            length(image_data) as image_chars, length(coalesce(thumbnail_data, '')) as thumb_chars
+       from scan_shots order by trip_id, id`,
+  );
+  const sizes = await sql.query<{
+    shots: number;
+    image_chars: string;
+    thumb_chars: string;
+    item_thumbs: string;
+    receipt_thumbs: string;
+  }>(
+    `select
+       (select count(*) from scan_shots) as shots,
+       (select coalesce(sum(length(image_data)), 0) from scan_shots) as image_chars,
+       (select coalesce(sum(length(thumbnail_data)), 0) from scan_shots) as thumb_chars,
+       (select coalesce(sum(length(thumbnail_data)), 0) from trip_items) as item_thumbs,
+       (select coalesce(sum(length(thumbnail_data)), 0) from receipt_captures) as receipt_thumbs`,
+  );
+  const parseJson = (raw: string | null) => {
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      return raw.slice(0, 200);
+    }
+  };
+  return {
+    trips,
+    items,
+    receipts: receipts.map((r) => ({ ...r, extracted: parseJson(r.extracted_json), extracted_json: undefined })),
+    shots: shots.map((s) => ({
+      id: s.id,
+      tripId: s.trip_id,
+      kind: s.kind,
+      barcode: s.barcode,
+      itemId: s.item_id,
+      captureId: s.capture_id,
+      createdAt: s.created_at,
+      imageChars: Number(s.image_chars),
+      thumbChars: Number(s.thumb_chars),
+      lastRead: parseJson(s.last_read_json),
+    })),
+    blobBytes: sizes[0] ?? null,
+  };
+}
+
+export const troubleshootTrip = createServerFn({ method: "POST" })
+  .validator(
+    (input: {
+      tripId: number;
+      scope?: "trip" | "full";
+      provider?: LlmProvider;
+      settings?: {
+        read: string;
+        collate: LlmProvider;
+        autoAdd: boolean;
+        debugSamples: boolean;
+        visionDetail: "low" | "high";
+        ppocrFeel: "loose" | "normal" | "strict";
+        ppocrDetSize: "tiny" | "small" | "medium";
+        ppocrRecSize: "tiny" | "small" | "medium";
+      } | null;
+    }) => input,
+  )
+  .handler(async ({ data }) => {
+    const scope = data.scope === "full" ? "full" : "trip";
+    const trip = await loadTrip(data.tripId);
+    if (!trip) throw new Error("Trip not found");
+    let ledger: unknown = null;
+    try {
+      const { inspectLedger: run } = await import("@/lib/ledger-repair");
+      ledger = await run();
+    } catch {
+      ledger = null;
+    }
+    const actions = readActions(250);
+    const { tripSnapshot, askLlmAboutTrip } = await import("./troubleshoot");
+    const settings = (data.settings as import("./settings").ScanSettings | null) ?? null;
+    let snapshot: unknown;
+    if (scope === "full") {
+      const dump = await loadFullDebugDump();
+      const open = await tripSnapshot(
+        {
+          trip,
+          items: await loadItems(data.tripId),
+          receipts: await loadReceipts(data.tripId),
+          shots: await loadShots(data.tripId),
+        },
+        settings,
+        { ledger, actions },
+      );
+      snapshot = { scope: "full", openTrip: open, allTrips: dump, actions };
+    } else {
+      const [items, receipts, shots] = await Promise.all([
+        loadItems(data.tripId),
+        loadReceipts(data.tripId),
+        loadShots(data.tripId),
+      ]);
+      snapshot = await tripSnapshot({ trip, items, receipts, shots }, settings, { ledger, actions });
+    }
+    const result = await askLlmAboutTrip(snapshot, data.provider ?? "byok", scope);
+    if (!result.ok) throw new Error(result.error);
+    recordAction({ action: `debug:${scope}`, ok: true, tripId: data.tripId });
+    const app =
+      snapshot && typeof snapshot === "object" && "app" in snapshot
+        ? String((snapshot as { app?: string }).app ?? "")
+        : "";
+    const report = [
+      `# Tillwise debug ${app} · ${scope === "full" ? "full ledger" : `trip ${trip.id}`}`,
+      "",
+      result.text,
+      "",
+      "## Snapshot JSON",
+      "```json",
+      JSON.stringify(snapshot, null, 2),
+      "```",
+    ].join("\n");
+    return {
+      diagnosis: result.text,
+      report,
+      scope,
+      sent: {
+        items: 0,
+        receiptSlips: 0,
+        photos: 0,
+        lineSum: 0,
+        receiptTotal: null as number | null,
+      },
+    };
+  });
+
 export const inspectLedger = createServerFn({ method: "GET" }).handler(async () => {
   const { inspectLedger: run } = await import("@/lib/ledger-repair");
   return run();
@@ -1691,6 +1973,11 @@ export const repairLedger = createServerFn({ method: "POST" }).handler(async () 
   await releasePglite();
   const { repairLedger: run } = await import("@/lib/ledger-repair");
   const result = await run();
+  recordAction({
+    action: "repairLedger",
+    ok: result.ok,
+    detail: result.steps.slice(0, 4).join(" | "),
+  });
   const restarting =
     result.ok && result.repaired && process.env.NODE_ENV === "production";
   if (restarting) {
@@ -1703,6 +1990,13 @@ export const repairLedger = createServerFn({ method: "POST" }).handler(async () 
   }
   return { ...result, restarting };
 });
+
+export const logAppEvent = createServerFn({ method: "POST" })
+  .validator((input: { action: string; ok: boolean; tripId?: number; detail?: string }) => input)
+  .handler(async ({ data }) => {
+    recordAction(data);
+    return { ok: true as const };
+  });
 
 export const getLlmConfig = createServerFn({ method: "GET" }).handler(async () => {
   const { loadLlmConfig } = await import("./llm");

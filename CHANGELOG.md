@@ -2,6 +2,15 @@
 
 All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
+## 0.3.13 — 2026-09-06
+
+- Header shows the app version under the Tillwise name.
+- Opening a receipt or label photo no longer crashes (`tripDate is not defined`).
+- Settings: Ledger sits at the bottom of the page.
+- Trip: **Debug this trip** and **Full debug**. Copy report includes cart/till extracts, settings, ledger facts, and an action log (`/data/logs/actions.jsonl`). No pictures, no API key.
+- Photos live under `/data/photos` on the same mapped share. The ledger only keeps a path. On start, leftover `data:` blobs are copied out; if none, that pass does nothing. Trip pages load `/media/shot/…` instead of fat base64.
+- Checkpoint after create trip, snap, receipt, collate, file, reopen, and delete so an Unraid kill does not rewind the last session.
+
 ## 0.3.12 — 2026-09-06
 
 - Repair probe loads PGLite from the app directory (v0.3.11 looked in `/tmp` and reported a missing `@electric` package). WAL reset for Postgres 18 already ran on your share.

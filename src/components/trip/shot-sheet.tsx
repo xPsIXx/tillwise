@@ -21,6 +21,7 @@ import {
 import { loadScanSettings, READ_OPTIONS, type ReadMode } from "@/lib/grocery/settings";
 import type { LabelExtraction, ReceiptExtraction, ScanShot } from "@/lib/grocery/types";
 import { extractionConfidence } from "@/lib/grocery/parse-local";
+import { tripDate } from "@/lib/grocery/format";
 import { tagForShot, tagTone } from "@/lib/grocery/shot-status";
 import { cn } from "@/lib/utils";
 
