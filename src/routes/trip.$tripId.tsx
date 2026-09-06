@@ -6,12 +6,13 @@ import { Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { CollateSheet } from "@/components/trip/collate-sheet";
 import { ItemCard } from "@/components/trip/item-card";
 import { ProductMatchSheet } from "@/components/trip/product-match";
 import { ShotGallery } from "@/components/trip/shot-gallery";
 import { ShotSheet } from "@/components/trip/shot-sheet";
 import {
-  collateTrip,
+  applyCollate,
   completeTrip,
   deleteItem,
   deleteReceiptCapture,
@@ -20,8 +21,9 @@ import {
   getShotImage,
   getTrip,
   logAppEvent,
+  previewCollate,
   reopenTrip,
-  troubleshootTrip,
+  unmatchItem,
   updateItem,
   updateReceiptCapture,
   updateScanShot,
@@ -31,7 +33,7 @@ import { money, statusLabel, tripDate } from "@/lib/grocery/format";
 import { extractionConfidence } from "@/lib/grocery/parse-local";
 import { readLabelCapture, readLabelCaptureBatch, readReceiptCapture, readReceiptCaptureBatch } from "@/lib/grocery/read-capture";
 import { loadScanSettings } from "@/lib/grocery/settings";
-import type { LabelExtraction, ReceiptExtraction, ScanShot, TripItem } from "@/lib/grocery/types";
+import type { CollatePreview, LabelExtraction, ReceiptExtraction, ScanShot, TripItem } from "@/lib/grocery/types";
 
 export const Route = createFileRoute("/trip/$tripId")({ component: TripPage });
 
@@ -273,8 +275,9 @@ function TripPage() {
   const [openShot, setOpenShot] = useState<ScanShot | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [byokPhase, setByokPhase] = useState<"labels" | "receipts" | null>(null);
-  const [diagnosis, setDiagnosis] = useState<string | null>(null);
-  const [report, setReport] = useState<string | null>(null);
+  const [preview, setPreview] = useState<CollatePreview | null>(null);
+  const [confirmFile, setConfirmFile] = useState(false);
+  const [showReread, setShowReread] = useState(false);
 
   const detailQuery = useQuery({
     queryKey: ["trip", tripId],
@@ -288,40 +291,40 @@ function TripPage() {
   };
 
   const collate = useMutation({
-    mutationFn: () => collateTrip({ data: { tripId, provider: loadScanSettings().collate } }),
+    mutationFn: () => previewCollate({ data: { tripId, provider: loadScanSettings().collate } }),
+    onSuccess: (res) => setPreview(res),
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not collate"),
+  });
+
+  const apply = useMutation({
+    mutationFn: (pairs: { labelItemId: number | null; receiptIndex: number | null }[]) =>
+      applyCollate({ data: { tripId, provider: loadScanSettings().collate, pairs } }),
     onSuccess: (res) => {
+      setPreview(null);
       toast.success(
         res.usedLocalCollate
-          ? "Collated on this device — the text model was unavailable."
+          ? "Merged on this device — the text model was unavailable."
           : "Trip collated",
       );
       invalidate();
     },
-    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not collate"),
-  });
-
-  const help = useMutation({
-    mutationFn: (scope: "trip" | "full") => {
-      const settings = loadScanSettings();
-      return troubleshootTrip({
-        data: { tripId, scope, provider: settings.collate, settings },
-      });
-    },
-    onSuccess: (res) => {
-      setDiagnosis(res.diagnosis);
-      setReport(res.report);
-      toast.success("Report ready — copy it and paste into the Tillwise chat.");
-    },
-    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not ask the model"),
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not save merge"),
   });
 
   const finish = useMutation({
     mutationFn: () => completeTrip({ data: tripId }),
     onSuccess: () => {
+      setConfirmFile(false);
       toast.success("Trip filed");
       invalidate();
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not file trip"),
+  });
+
+  const splitMatch = useMutation({
+    mutationFn: (itemId: number) => unmatchItem({ data: { itemId } }),
+    onSuccess: () => invalidate(),
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not unmatch"),
   });
 
   const reopen = useMutation({
@@ -460,9 +463,16 @@ function TripPage() {
   const { trip, items, receipts, shots } = detailQuery.data;
   const photos = shots ?? [];
   const storeValue = store ?? trip.storeName ?? "";
-  const sum = items.reduce((acc, it) => acc + (it.linePrice ?? 0), 0);
   const merged = items.filter((i) => i.source === "merged");
   const visible = merged.length ? merged : items;
+  const matchedItems = visible.filter((i) => i.matchStatus === "matched");
+  const labelOnly = visible.filter((i) => i.matchStatus === "label_only");
+  const tillOnly = visible.filter((i) => i.matchStatus === "receipt_only");
+  const leftover = labelOnly.length + tillOnly.length;
+  const lineSum = visible.reduce((acc, it) => acc + (it.linePrice ?? 0), 0);
+  const printed = trip.receiptTotal;
+  const gap =
+    printed != null ? Math.round((lineSum - printed) * 100) / 100 : null;
   const processing = items.some((i) => i.matchStatus === "processing");
   const canCollate = !processing && (visible.length > 0 || receipts.length > 0);
   const canFile = !processing && (visible.length > 0 || receipts.length > 0);
@@ -488,7 +498,7 @@ function TripPage() {
           />
         </label>
         <p className="font-display text-3xl tabular-nums">
-          {money(trip.receiptTotal ?? sum, trip.currency)}
+          {money(trip.receiptTotal ?? lineSum, trip.currency)}
         </p>
       </div>
       <p className="mt-1 text-sm text-muted">
@@ -497,10 +507,25 @@ function TripPage() {
       {trip.notes && <p className="mt-2 text-sm text-muted">{trip.notes}</p>}
 
       <dl className="mt-5 grid grid-cols-3 gap-2">
-        <Mini label="Subtotal" value={money(trip.receiptSubtotal ?? sum, trip.currency)} />
+        <Mini label="Subtotal" value={money(trip.receiptSubtotal ?? lineSum, trip.currency)} />
         <Mini label="VAT" value={money(trip.receiptTax, trip.currency)} />
         <Mini label="Items" value={String(visible.length)} />
       </dl>
+      {gap != null && Math.abs(gap) >= 0.02 ? (
+        <p className="mt-3 rounded-xl bg-surface px-3 py-2 text-sm shadow-[var(--shadow-border)]">
+          Lines are {money(Math.abs(gap), trip.currency)} {gap > 0 ? "over" : "under"} the printed
+          till total ({money(printed, trip.currency)}). The printed total is kept.
+        </p>
+      ) : null}
+      {leftover > 0 ? (
+        <p className="mt-3 text-sm">
+          <a href="#unmatched" className="text-accent underline-offset-2 hover:underline">
+            {leftover} unmatched
+          </a>
+          {labelOnly.length ? ` · ${labelOnly.length} label only` : ""}
+          {tillOnly.length ? ` · ${tillOnly.length} till only` : ""}
+        </p>
+      ) : null}
 
       <div className="mt-6 flex flex-wrap gap-2">
         <Button asChild>
@@ -513,14 +538,49 @@ function TripPage() {
             Scan receipt
           </Link>
         </Button>
-        <Button
-          variant="accent"
-          disabled={collate.isPending || !canCollate}
-          onClick={() => collate.mutate()}
-        >
-          {collate.isPending ? "Collating…" : "Collate trip"}
-        </Button>
-        {photos.some((s) => s.kind === "label") && (
+        {receipts.length > 0 && (
+          <Button
+            variant="accent"
+            disabled={collate.isPending || apply.isPending || !canCollate}
+            onClick={() => collate.mutate()}
+          >
+            {collate.isPending ? "Matching…" : "Collate trip"}
+          </Button>
+        )}
+        {trip.status === "complete" ? (
+          <Button variant="primary" onClick={() => reopen.mutate()} disabled={reopen.isPending}>
+            {reopen.isPending ? "Reopening…" : "Reopen trip"}
+          </Button>
+        ) : (
+          canFile && (
+            <Button
+              variant="primary"
+              onClick={() => {
+                if (leftover > 0 && !confirmFile) {
+                  setConfirmFile(true);
+                  window.setTimeout(() => setConfirmFile(false), 4000);
+                  return;
+                }
+                finish.mutate();
+              }}
+              disabled={finish.isPending}
+            >
+              {finish.isPending
+                ? "Filing…"
+                : confirmFile
+                  ? `File with ${leftover} unmatched?`
+                  : "File trip"}
+            </Button>
+          )
+        )}
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {photos.length > 0 && (
+          <Button type="button" variant="ghost" className="text-muted" onClick={() => setShowReread((v) => !v)}>
+            {showReread ? "Hide re-read" : "Re-read photos"}
+          </Button>
+        )}
+        {showReread && photos.some((s) => s.kind === "label") && (
           <Button
             variant="secondary"
             disabled={sendPpocr.isPending || sendByok.isPending}
@@ -529,7 +589,7 @@ function TripPage() {
             {sendPpocr.isPending ? "PP-OCR reading…" : "Reprocess labels with PP-OCR"}
           </Button>
         )}
-        {photos.length > 0 && (
+        {showReread && photos.length > 0 && (
           <Button
             variant="secondary"
             disabled={sendByok.isPending || sendPpocr.isPending}
@@ -543,31 +603,6 @@ function TripPage() {
                   ? "BYOK reading…"
                   : "Labels, then till slips with BYOK"}
           </Button>
-        )}
-        <Button
-          variant="secondary"
-          disabled={help.isPending}
-          onClick={() => help.mutate("trip")}
-        >
-          {help.isPending && help.variables !== "full" ? "Sending…" : "Debug this trip"}
-        </Button>
-        <Button
-          variant="secondary"
-          disabled={help.isPending}
-          onClick={() => help.mutate("full")}
-        >
-          {help.isPending && help.variables === "full" ? "Sending…" : "Full debug"}
-        </Button>
-        {trip.status === "complete" ? (
-          <Button variant="primary" onClick={() => reopen.mutate()} disabled={reopen.isPending}>
-            {reopen.isPending ? "Reopening…" : "Reopen trip"}
-          </Button>
-        ) : (
-          canFile && (
-            <Button variant="primary" onClick={() => finish.mutate()} disabled={finish.isPending}>
-              {finish.isPending ? "Filing…" : "File trip"}
-            </Button>
-          )
         )}
         <Button
           variant="ghost"
@@ -635,41 +670,6 @@ function TripPage() {
           </Button>
         )}
       </div>
-
-      {diagnosis && (
-        <section className="mt-6 rounded-2xl bg-surface p-5 shadow-[var(--shadow-border)]">
-          <h2 className="font-display text-2xl">Troubleshooting</h2>
-          <p className="mt-1 text-sm text-muted">
-            Full cart, till-slip text, photo tags, settings, and ledger facts were sent — not the
-            pictures, not your API key. Copy the report and paste it here.
-          </p>
-          <p className="mt-4 whitespace-pre-wrap text-sm leading-relaxed">{diagnosis}</p>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <Button
-              type="button"
-              onClick={() => {
-                const text = report ?? diagnosis;
-                void navigator.clipboard.writeText(text).then(
-                  () => toast.success("Copied. Paste it into the Tillwise chat."),
-                  () => toast.error("Could not copy"),
-                );
-              }}
-            >
-              Copy report
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => {
-                setDiagnosis(null);
-                setReport(null);
-              }}
-            >
-              Dismiss
-            </Button>
-          </div>
-        </section>
-      )}
 
       {photos.length > 0 && (
         <section className="mt-8">
@@ -743,30 +743,99 @@ function TripPage() {
             Nothing scanned yet. Open the camera and frame a produce sticker — or try a sample.
           </p>
         ) : (
-          <ul className="mt-3 space-y-2">
-            {visible.map((item) => (
-              <li key={item.id}>
-                <ItemCard
-                  item={item}
-                  currency={trip.currency}
-                  onMatch={setMatching}
-                  onEdit={setEditing}
-                  onDelete={(it) => removeItem.mutate(it.id)}
-                  onReprocess={
-                    !photos.some((s) => s.itemId === item.id)
-                      ? undefined
-                      : (it) => {
-                          const shot = photos.find((s) => s.itemId === it.id);
-                          if (shot) setOpenShot(shot);
-                        }
-                  }
-                />
-              </li>
-            ))}
-          </ul>
+          <>
+            {matchedItems.length > 0 && (
+              <ul className="mt-3 space-y-2">
+                {matchedItems.map((item) => (
+                  <li key={item.id}>
+                    <LineCard
+                      item={item}
+                      tripCurrency={trip.currency}
+                      photos={photos}
+                      onMatch={setMatching}
+                      onEdit={setEditing}
+                      onDelete={(it) => removeItem.mutate(it.id)}
+                      onOpenShot={setOpenShot}
+                      onUnmatch={(it) => splitMatch.mutate(it.id)}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+            {leftover > 0 && (
+              <div id="unmatched" className="mt-8 scroll-mt-24">
+                <h3 className="font-display text-xl">Unmatched</h3>
+                {labelOnly.length > 0 && (
+                  <>
+                    <p className="mt-2 text-sm text-muted">Label only · {labelOnly.length}</p>
+                    <ul className="mt-2 space-y-2">
+                      {labelOnly.map((item) => (
+                        <li key={item.id}>
+                          <LineCard
+                            item={item}
+                            tripCurrency={trip.currency}
+                            photos={photos}
+                            onMatch={setMatching}
+                            onEdit={setEditing}
+                            onDelete={(it) => removeItem.mutate(it.id)}
+                            onOpenShot={setOpenShot}
+                          />
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {tillOnly.length > 0 && (
+                  <>
+                    <p className="mt-4 text-sm text-muted">Till only · {tillOnly.length}</p>
+                    <ul className="mt-2 space-y-2">
+                      {tillOnly.map((item) => (
+                        <li key={item.id}>
+                          <LineCard
+                            item={item}
+                            tripCurrency={trip.currency}
+                            photos={photos}
+                            onMatch={setMatching}
+                            onEdit={setEditing}
+                            onDelete={(it) => removeItem.mutate(it.id)}
+                            onOpenShot={setOpenShot}
+                          />
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </div>
+            )}
+            {matchedItems.length === 0 && leftover === 0 && (
+              <ul className="mt-3 space-y-2">
+                {visible.map((item) => (
+                  <li key={item.id}>
+                    <LineCard
+                      item={item}
+                      tripCurrency={trip.currency}
+                      photos={photos}
+                      onMatch={setMatching}
+                      onEdit={setEditing}
+                      onDelete={(it) => removeItem.mutate(it.id)}
+                      onOpenShot={setOpenShot}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
         )}
       </section>
 
+      {preview && (
+        <CollateSheet
+          preview={preview}
+          busy={apply.isPending}
+          onCancel={() => setPreview(null)}
+          onConfirm={(pairs) => apply.mutate(pairs)}
+        />
+      )}
       {editing && (
         <div
           className="fixed inset-0 z-40 grid place-items-end bg-bg/50 p-4 sm:place-items-center"
@@ -883,6 +952,45 @@ function TripPage() {
         />
       )}
     </main>
+  );
+}
+
+function LineCard({
+  item,
+  tripCurrency,
+  photos,
+  onMatch,
+  onEdit,
+  onDelete,
+  onOpenShot,
+  onUnmatch,
+}: {
+  item: TripItem;
+  tripCurrency: string;
+  photos: ScanShot[];
+  onMatch: (item: TripItem) => void;
+  onEdit: (item: TripItem) => void;
+  onDelete: (item: TripItem) => void;
+  onOpenShot: (shot: ScanShot) => void;
+  onUnmatch?: (item: TripItem) => void;
+}) {
+  return (
+    <ItemCard
+      item={item}
+      currency={tripCurrency}
+      onMatch={onMatch}
+      onEdit={onEdit}
+      onDelete={onDelete}
+      onUnmatch={onUnmatch}
+      onReprocess={
+        !photos.some((s) => s.itemId === item.id)
+          ? undefined
+          : (it) => {
+              const shot = photos.find((s) => s.itemId === it.id);
+              if (shot) onOpenShot(shot);
+            }
+      }
+    />
   );
 }
 

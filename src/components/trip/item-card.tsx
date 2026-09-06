@@ -20,6 +20,7 @@ export function ItemCard({
   onDelete,
   onReprocess,
   onMatch,
+  onUnmatch,
 }: {
   item: TripItem;
   currency: string;
@@ -27,6 +28,7 @@ export function ItemCard({
   onDelete?: (item: TripItem) => void;
   onReprocess?: (item: TripItem) => void;
   onMatch?: (item: TripItem) => void;
+  onUnmatch?: (item: TripItem) => void;
 }) {
   const match = MATCH[item.matchStatus] ?? MATCH.unmatched;
   const reading = item.matchStatus === "processing";
@@ -54,6 +56,9 @@ export function ItemCard({
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <h3 className="truncate font-medium leading-tight">{item.name}</h3>
+            {item.tillName && item.matchStatus === "matched" ? (
+              <p className="truncate text-xs text-muted">Till: {item.tillName}</p>
+            ) : null}
             <p className="truncate text-xs text-muted">
               {reading
                 ? "Captured — filling in from the photo"
@@ -95,8 +100,19 @@ export function ItemCard({
         {!reading && item.quantity != null && item.quantity !== 1 ? (
           <p className="mt-1 text-[11px] text-subtle">{qty(item.quantity, item.quantityUnit)}</p>
         ) : null}
-        {(onEdit || onDelete || onReprocess || onMatch) && !reading && (
+        {(onEdit || onDelete || onReprocess || onMatch || onUnmatch) && !reading && (
           <div className="mt-2 flex flex-wrap justify-end gap-1">
+            {onUnmatch && item.matchStatus === "matched" && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-9 px-2 text-muted"
+                onClick={() => onUnmatch(item)}
+              >
+                Unmatch
+              </Button>
+            )}
             {onMatch && (
               <Button
                 type="button"

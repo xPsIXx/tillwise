@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -15,7 +15,8 @@ import {
   type ScanSettings,
   type VisionDetail,
 } from "@/lib/grocery/settings";
-import { getLlmConfig, inspectLedger, listLlmModels, repairLedger, saveLlmConfig } from "@/lib/grocery/server";
+import { getLlmConfig, inspectLedger, listLlmModels, listTrips, repairLedger, saveLlmConfig, troubleshootTrip } from "@/lib/grocery/server";
+import { statusLabel, tripDate } from "@/lib/grocery/format";
 import { type EngineProgress } from "@/lib/grocery/tfjs";
 import { cn } from "@/lib/utils";
 
@@ -493,6 +494,7 @@ function SettingsPage() {
           checked={settings.debugSamples}
           onChange={(debugSamples) => patch({ debugSamples })}
         />
+        <DebugReports />
       </section>
 
       <section className="mt-10 rounded-2xl bg-surface p-5 shadow-[var(--shadow-border)]">
@@ -519,6 +521,129 @@ function SettingsPage() {
 
       <LedgerPanel />
     </main>
+  );
+}
+
+function DebugReports() {
+  const [tripId, setTripId] = useState<number | null>(null);
+  const [diagnosis, setDiagnosis] = useState<string | null>(null);
+  const [report, setReport] = useState<string | null>(null);
+  const copyBox = useRef<HTMLTextAreaElement>(null);
+  const tripsQuery = useQuery({
+    queryKey: ["trips"],
+    queryFn: () => listTrips(),
+  });
+  const trips = tripsQuery.data ?? [];
+
+  useEffect(() => {
+    if (tripId != null) return;
+    const open = trips.find((t) => t.status === "shopping") ?? trips[0];
+    if (open) setTripId(open.id);
+  }, [trips, tripId]);
+
+  const help = useMutation({
+    mutationFn: (scope: "trip" | "full") => {
+      if (tripId == null) throw new Error("No trip to debug");
+      const settings = loadScanSettings();
+      return troubleshootTrip({
+        data: { tripId, scope, provider: settings.collate, settings },
+      });
+    },
+    onSuccess: (res) => {
+      setDiagnosis(res.diagnosis);
+      setReport(res.report);
+      toast.success("Report ready — copy it and paste into the Tillwise chat.");
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not ask the model"),
+  });
+
+  return (
+    <div className="mt-6 rounded-2xl bg-surface p-5 shadow-[var(--shadow-border)]">
+      <p className="text-sm text-muted">
+        Builds a text report. Use Copy, or tap the box and copy it yourself. Nothing is sent to
+        Grok until you paste it there.
+      </p>
+      {trips.length > 0 ? (
+        <label className="mt-4 block text-sm">
+          <span className="text-muted">Trip for “this trip”</span>
+          <select
+            className="mt-1 w-full rounded-md border border-border bg-bg px-3 py-2"
+            value={tripId ?? ""}
+            onChange={(e) => setTripId(Number(e.target.value))}
+          >
+            {trips.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.storeName || "Untitled"} · {statusLabel(t.status)} · {tripDate(t.startedAt)}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        <p className="mt-4 text-sm text-muted">No trips yet.</p>
+      )}
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={help.isPending || tripId == null}
+          onClick={() => help.mutate("trip")}
+        >
+          {help.isPending && help.variables !== "full" ? "Sending…" : "Debug this trip"}
+        </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={help.isPending || tripId == null}
+          onClick={() => help.mutate("full")}
+        >
+          {help.isPending && help.variables === "full" ? "Sending…" : "Full debug"}
+        </Button>
+      </div>
+      {(report || diagnosis) && (
+        <div className="mt-5">
+          <label className="block text-sm text-muted" htmlFor="debug-report">
+            Debug report
+          </label>
+          <textarea
+            id="debug-report"
+            ref={copyBox}
+            readOnly
+            className="mt-1 h-64 w-full rounded-md border border-border bg-bg p-3 font-mono text-xs leading-relaxed"
+            value={report ?? diagnosis ?? ""}
+            onFocus={(e) => e.currentTarget.select()}
+          />
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button
+              type="button"
+              onClick={() => {
+                const text = report ?? diagnosis ?? "";
+                const box = copyBox.current;
+                if (box) {
+                  box.focus();
+                  box.select();
+                }
+                void navigator.clipboard.writeText(text).then(
+                  () => toast.success("Copied to clipboard"),
+                  () => toast.error("Copy failed — select the text in the box and copy it"),
+                );
+              }}
+            >
+              Copy report
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setDiagnosis(null);
+                setReport(null);
+              }}
+            >
+              Dismiss
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

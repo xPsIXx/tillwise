@@ -2,10 +2,10 @@ import { resolveEndpoint } from "./llm";
 import { parseLabelText, pickProductName, nameLooksWeak } from "./parse-local";
 import type {
   CollatedItem,
-  CollationResult,
+  CollatePair,
+  CollatePreview,
   LabelExtraction,
   LlmProvider,
-  MatchStatus,
   ReceiptExtraction,
   ReceiptLine,
   TripItem,
@@ -406,227 +406,257 @@ function mergePortionsLocally(portions: ReceiptExtraction[]): ReceiptExtraction 
   };
 }
 
-function localCollate(
-  labels: TripItem[],
-  receipt: ReceiptExtraction | null,
-): CollationResult {
-  const usedReceipt = new Set<number>();
-  const items: CollatedItem[] = [];
-
+function nameScore(a: string, b: string): number {
   const norm = (s: string) =>
     s
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, " ")
       .trim();
-
   const STOP = new Set(["the", "and", "for", "with", "from"]);
   const tokens = (s: string) =>
     s
       .split(" ")
       .filter((w) => w.length > 2 && !STOP.has(w));
+  const tokenHit = (x: string, y: string) =>
+    x === y || (x.length >= 3 && y.length >= 3 && (x.startsWith(y) || y.startsWith(x)));
+  const ln = norm(a);
+  const rn = norm(b);
+  if (!ln || !rn) return 0;
+  if (ln === rn) return 1;
+  if (ln.includes(rn) || rn.includes(ln)) return 0.82;
+  const lt = tokens(ln);
+  const rt = tokens(rn);
+  let hit = 0;
+  lt.forEach((w) => {
+    if (rt.some((x) => tokenHit(w, x))) hit += 1;
+  });
+  const union = new Set([...lt, ...rt]).size || 1;
+  return hit / union;
+}
 
-  const tokenHit = (a: string, b: string) =>
-    a === b || (a.length >= 3 && b.length >= 3 && (a.startsWith(b) || b.startsWith(a)));
+/** Matched = a shelf label AND a till line. Never “matched” from a price fill-in. */
+function mergeLabelWithLine(label: TripItem, line: ReceiptLine | null, score: number | null): CollatedItem {
+  const matched = Boolean(line);
+  return {
+    name: label.name,
+    brand: label.brand,
+    description: label.description,
+    barcode: label.barcode,
+    category: label.category,
+    quantity: label.quantity ?? line?.quantity ?? null,
+    quantityUnit: label.quantityUnit ?? line?.quantityUnit ?? null,
+    weightValue: label.weightValue ?? line?.weightValue ?? null,
+    weightUnit: label.weightUnit ?? line?.weightUnit ?? null,
+    unitPrice: line?.unitPrice ?? label.unitPrice,
+    linePrice: line?.linePrice ?? label.linePrice,
+    currency: label.currency ?? "AED",
+    matchStatus: matched ? "matched" : "label_only",
+    matchConfidence: matched && score != null ? Math.round(score * 100) / 100 : null,
+    thumbnailData: label.thumbnailData,
+    tillName: line?.name ?? null,
+  };
+}
 
+function tillOnlyItem(line: ReceiptLine, currency: string): CollatedItem {
+  return {
+    name: line.name,
+    brand: null,
+    description: null,
+    barcode: null,
+    category: null,
+    quantity: line.quantity,
+    quantityUnit: line.quantityUnit,
+    weightValue: line.weightValue,
+    weightUnit: line.weightUnit,
+    unitPrice: line.unitPrice,
+    linePrice: line.linePrice,
+    currency,
+    matchStatus: "receipt_only",
+    matchConfidence: null,
+    thumbnailData: null,
+    tillName: line.name,
+  };
+}
+
+function rowsFromPairing(
+  labels: TripItem[],
+  receipt: ReceiptExtraction | null,
+  assigned: Map<number, number>,
+): CollatePair[] {
+  const receiptItems = receipt?.items ?? [];
+  const used = new Set(assigned.values());
+  const currency = receipt?.currency ?? "AED";
+  const rows: CollatePair[] = [];
+
+  for (const label of labels) {
+    const idx = assigned.get(label.id);
+    const line = idx != null ? receiptItems[idx] ?? null : null;
+    const score =
+      line != null
+        ? nameScore([label.brand, label.name].filter(Boolean).join(" "), line.name)
+        : null;
+    rows.push({
+      labelItemId: label.id,
+      receiptIndex: idx ?? null,
+      aisleName: label.name,
+      tillName: line?.name ?? null,
+      item: mergeLabelWithLine(label, line, score),
+    });
+  }
+
+  receiptItems.forEach((line, i) => {
+    if (used.has(i)) return;
+    rows.push({
+      labelItemId: null,
+      receiptIndex: i,
+      aisleName: line.name,
+      tillName: line.name,
+      item: tillOnlyItem(line, currency),
+    });
+  });
+  return rows;
+}
+
+function localAssign(labels: TripItem[], receipt: ReceiptExtraction | null): Map<number, number> {
+  const assigned = new Map<number, number>();
+  const used = new Set<number>();
+  const receiptItems = receipt?.items ?? [];
   for (const label of labels) {
     let best = -1;
     let bestScore = 0;
-    const ln = norm([label.brand, label.name].filter(Boolean).join(" "));
-    const receiptItems = receipt?.items ?? [];
+    const ln = [label.brand, label.name].filter(Boolean).join(" ");
     receiptItems.forEach((line, i) => {
-      if (usedReceipt.has(i)) return;
-      const rn = norm(line.name);
-      if (!ln || !rn) return;
-      let score = 0;
-      if (ln === rn) score = 1;
-      else if (ln.includes(rn) || rn.includes(ln)) score = 0.82;
-      else {
-        const lt = tokens(ln);
-        const rt = tokens(rn);
-        let hit = 0;
-        lt.forEach((w) => {
-          if (rt.some((x) => tokenHit(w, x))) hit += 1;
-        });
-        const union = new Set([...lt, ...rt]).size || 1;
-        score = hit / union;
-        if (
-          label.weightValue != null &&
-          line.weightValue != null &&
-          Math.abs(label.weightValue - line.weightValue) < 0.02
-        ) {
-          score += 0.12;
-        }
+      if (used.has(i)) return;
+      let score = nameScore(ln, line.name);
+      if (
+        label.weightValue != null &&
+        line.weightValue != null &&
+        Math.abs(label.weightValue - line.weightValue) < 0.02
+      ) {
+        score += 0.12;
       }
       if (score > bestScore) {
         bestScore = score;
         best = i;
       }
     });
-
-    const matched = best >= 0 && bestScore >= 0.35 ? receiptItems[best] : null;
-    if (matched) usedReceipt.add(best);
-
-    items.push({
-      name: label.name,
-      brand: label.brand,
-      description: label.description,
-      barcode: label.barcode,
-      category: label.category,
-      quantity: label.quantity ?? matched?.quantity ?? null,
-      quantityUnit: label.quantityUnit ?? matched?.quantityUnit ?? null,
-      weightValue: label.weightValue ?? matched?.weightValue ?? null,
-      weightUnit: label.weightUnit ?? matched?.weightUnit ?? null,
-      unitPrice: matched?.unitPrice ?? label.unitPrice,
-      linePrice: matched?.linePrice ?? label.linePrice,
-      currency: label.currency ?? receipt?.currency ?? "AED",
-      matchStatus: matched ? "matched" : "label_only",
-      matchConfidence: matched ? Math.round(bestScore * 100) / 100 : null,
-      thumbnailData: label.thumbnailData,
-    });
+    if (best >= 0 && bestScore >= 0.55) {
+      assigned.set(label.id, best);
+      used.add(best);
+    }
   }
+  return assigned;
+}
 
-  (receipt?.items ?? []).forEach((line, i) => {
-    if (usedReceipt.has(i)) return;
-    items.push({
-      name: line.name,
-      brand: null,
-      description: null,
-      barcode: null,
-      category: null,
-      quantity: line.quantity,
-      quantityUnit: line.quantityUnit,
-      weightValue: line.weightValue,
-      weightUnit: line.weightUnit,
-      unitPrice: line.unitPrice,
-      linePrice: line.linePrice,
-      currency: receipt?.currency ?? "AED",
-      matchStatus: "receipt_only",
-      matchConfidence: null,
-      thumbnailData: null,
-    });
-  });
-
-  const sum = items.reduce((acc, it) => acc + (it.linePrice ?? 0), 0);
+function finishPreview(
+  tripId: number,
+  rows: CollatePair[],
+  receipt: ReceiptExtraction | null,
+  usedLocalCollate: boolean,
+): CollatePreview {
+  const lineSum = Math.round(rows.reduce((acc, r) => acc + (r.item.linePrice ?? 0), 0) * 100) / 100;
+  const total = receipt?.total ?? null;
+  const gap =
+    total != null ? Math.round((lineSum - total) * 100) / 100 : null;
   return {
+    tripId,
+    rows,
     storeName: receipt?.storeName ?? null,
     storeLocation: receipt?.storeLocation ?? null,
     datetime: receipt?.datetime ?? null,
-    subtotal: receipt?.subtotal ?? (sum || null),
+    subtotal: receipt?.subtotal ?? null,
     tax: receipt?.tax ?? null,
-    total: receipt?.total ?? (sum || null),
+    total,
     currency: receipt?.currency ?? "AED",
-    items,
-    notes: null,
+    lineSum,
+    gap,
+    usedLocalCollate,
   };
 }
 
-export async function collateTripData(
+export async function proposeCollation(
+  tripId: number,
   labels: TripItem[],
   receipt: ReceiptExtraction | null,
   provider?: LlmProvider,
-): Promise<
-  { ok: true; data: CollationResult; usedLocalCollate: boolean } | { ok: false; error: string }
-> {
-  const fallback = localCollate(labels, receipt);
+): Promise<CollatePreview> {
+  const local = localAssign(labels, receipt);
   const useProvider = provider ?? "local";
-
   const result = await chat({
-    maxTokens: 2000,
+    maxTokens: 1200,
     provider: useProvider,
     task: "text",
-    prompt: `Collate a grocery trip. Labels were photographed in the aisle (they have weights/quantities that the till often omits). The receipt has prices and may use abbreviated names.
-Rules:
-- Prefer label for name, brand, description, barcode, weight, quantity.
-- Prefer receipt for unit_price and line_price.
-- Match abbreviated till names to labels (e.g. "TOM VINE" → "Tomatoes on the Vine"). Group different names that are the same product.
-- Keep receipt-only items that were never photographed.
-- Keep label-only items that did not appear on the till.
-- Group aisle names and till abbreviations onto one canonical product name (TOM VINE and Tomatoes on the Vine are the same).
-- Copy store_name, store_location, and datetime from the receipt header when present.
-- match_status: matched | label_only | receipt_only
-- match_confidence: 0-1 or null
-Return JSON: store_name, store_location, datetime, subtotal, tax, total, currency, notes, items[]
-Each item: name, brand, description, barcode, category, quantity, quantity_unit, weight_value, weight_unit, unit_price, line_price, currency, match_status, match_confidence.
+    prompt: `Match aisle label photos to till-slip lines. One label to at most one till line. Do not invent products.
+
+Return JSON only: { "matches": [ { "label_id": number, "receipt_index": number } ] }
+receipt_index is 0-based into RECEIPT.items. Omit a label (or use receipt_index -1) if it is not on the till.
+Each receipt_index at most once. Prefer matching abbreviations (TOM VINE → Tomatoes on the Vine).
 
 LABELS:
-${JSON.stringify(
-  labels.map((l) => ({
-    name: l.name,
-    brand: l.brand,
-    description: l.description,
-    barcode: l.barcode,
-    category: l.category,
-    quantity: l.quantity,
-    quantityUnit: l.quantityUnit,
-    weightValue: l.weightValue,
-    weightUnit: l.weightUnit,
-    unitPrice: l.unitPrice,
-    linePrice: l.linePrice,
-    currency: l.currency,
-  })),
-)}
+${JSON.stringify(labels.map((l) => ({ id: l.id, name: l.name, brand: l.brand, weight: l.weightValue, unit: l.weightUnit })))}
 
-RECEIPT:
-${JSON.stringify(receipt)}`,
+RECEIPT.items:
+${JSON.stringify((receipt?.items ?? []).map((line, i) => ({ index: i, name: line.name, line_price: line.linePrice, weight: line.weightValue })))}`,
   });
 
-  if (!result.ok) return { ok: true, data: fallback, usedLocalCollate: true };
-  const obj = parseJson(result.text);
-  if (!obj) return { ok: true, data: fallback, usedLocalCollate: true };
+  let assigned = local;
+  let usedLocal = true;
+  if (result.ok) {
+    const obj = parseJson(result.text);
+    const raw = obj && Array.isArray(obj.matches) ? obj.matches : [];
+    const next = new Map<number, number>();
+    const used = new Set<number>();
+    const labelIds = new Set(labels.map((l) => l.id));
+    const n = receipt?.items.length ?? 0;
+    for (const row of raw) {
+      if (!row || typeof row !== "object") continue;
+      const rec = row as Record<string, unknown>;
+      const lid = num(rec.label_id) ?? num(rec.labelId);
+      const idx = num(rec.receipt_index) ?? num(rec.receiptIndex);
+      if (lid == null || !labelIds.has(lid)) continue;
+      if (idx == null || idx < 0 || idx >= n || used.has(idx)) continue;
+      next.set(lid, idx);
+      used.add(idx);
+    }
+    if (next.size > 0) {
+      const leftover = labels.filter((l) => !next.has(l.id));
+      const restReceipt: ReceiptExtraction | null = receipt
+        ? { ...receipt, items: receipt.items.filter((_, i) => !used.has(i)) }
+        : null;
+      const rest = localAssign(leftover, restReceipt);
+      const indexMap: number[] = [];
+      receipt?.items.forEach((_, i) => {
+        if (!used.has(i)) indexMap.push(i);
+      });
+      for (const [lid, localIdx] of rest) {
+        const real = indexMap[localIdx];
+        if (real != null) next.set(lid, real);
+      }
+      assigned = next;
+      usedLocal = false;
+    }
+  }
 
-  const rawItems = Array.isArray(obj.items) ? obj.items : [];
-  const items: CollatedItem[] = rawItems
-    .filter((x): x is Record<string, unknown> => !!x && typeof x === "object")
-    .map((it, i) => {
-      const statusRaw = str(it.match_status) ?? str(it.matchStatus) ?? "unmatched";
-      const matchStatus: MatchStatus =
-        statusRaw === "matched" ||
-        statusRaw === "label_only" ||
-        statusRaw === "receipt_only"
-          ? statusRaw
-          : "unmatched";
-      const thumb =
-        labels.find((l) => l.name.toLowerCase() === (str(it.name) ?? "").toLowerCase())
-          ?.thumbnailData ??
-        fallback.items[i]?.thumbnailData ??
-        null;
-      return {
-        name: str(it.name) ?? "Item",
-        brand: str(it.brand),
-        description: str(it.description),
-        barcode: str(it.barcode),
-        category: str(it.category),
-        quantity: num(it.quantity),
-        quantityUnit: str(it.quantity_unit) ?? str(it.quantityUnit),
-        weightValue: num(it.weight_value) ?? num(it.weightValue),
-        weightUnit: str(it.weight_unit) ?? str(it.weightUnit),
-        unitPrice: num(it.unit_price) ?? num(it.unitPrice),
-        linePrice: num(it.line_price) ?? num(it.linePrice),
-        currency: str(it.currency) ?? fallback.currency,
-        matchStatus,
-        matchConfidence: num(it.match_confidence) ?? num(it.matchConfidence),
-        thumbnailData: thumb,
-      };
-    });
+  const rows = rowsFromPairing(labels, receipt, assigned);
+  return finishPreview(tripId, rows, receipt, usedLocal);
+}
 
-  if (items.length === 0) return { ok: true, data: fallback, usedLocalCollate: true };
-
-  return {
-    ok: true,
-    usedLocalCollate: false,
-    data: {
-      storeName: str(obj.store_name) ?? str(obj.storeName) ?? fallback.storeName,
-      storeLocation:
-        str(obj.store_location) ?? str(obj.storeLocation) ?? fallback.storeLocation,
-      datetime: str(obj.datetime) ?? fallback.datetime,
-      subtotal: num(obj.subtotal) ?? fallback.subtotal,
-      tax: num(obj.tax) ?? fallback.tax,
-      total: num(obj.total) ?? fallback.total,
-      currency: str(obj.currency) ?? fallback.currency,
-      items,
-      notes: str(obj.notes),
-    },
-  };
+export function previewFromRows(
+  tripId: number,
+  labels: TripItem[],
+  receipt: ReceiptExtraction | null,
+  pairs: { labelItemId: number | null; receiptIndex: number | null }[],
+): CollatePreview {
+  const assigned = new Map<number, number>();
+  const used = new Set<number>();
+  for (const p of pairs) {
+    if (p.labelItemId != null && p.receiptIndex != null && !used.has(p.receiptIndex)) {
+      assigned.set(p.labelItemId, p.receiptIndex);
+      used.add(p.receiptIndex);
+    }
+  }
+  const rows = rowsFromPairing(labels, receipt, assigned);
+  return finishPreview(tripId, rows, receipt, true);
 }
 
 export async function mapCommonNames(

@@ -53,6 +53,7 @@ export type TripItem = {
   createdAt: string;
   productId: number | null;
   productName: string | null;
+  tillName: string | null;
 };
 
 export type ReceiptCapture = {
@@ -134,6 +135,30 @@ export type CollatedItem = {
   matchStatus: MatchStatus;
   matchConfidence: number | null;
   thumbnailData: string | null;
+  tillName?: string | null;
+};
+
+export type CollatePair = {
+  labelItemId: number | null;
+  receiptIndex: number | null;
+  aisleName: string;
+  tillName: string | null;
+  item: CollatedItem;
+};
+
+export type CollatePreview = {
+  tripId: number;
+  rows: CollatePair[];
+  storeName: string | null;
+  storeLocation: string | null;
+  datetime: string | null;
+  subtotal: number | null;
+  tax: number | null;
+  total: number | null;
+  currency: string;
+  lineSum: number;
+  gap: number | null;
+  usedLocalCollate: boolean;
 };
 
 export type CollationResult = {

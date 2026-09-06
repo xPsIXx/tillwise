@@ -17,6 +17,7 @@ import { storedToDataUrl } from "@/lib/media-serve";
 import { canonicalGuess, nameKey as catalogKey, parseReceiptDate, perUnitPrice } from "./catalog";
 import type {
   CanonicalProduct,
+  CollatePreview,
   CollatedItem,
   GroceryAnalytics,
   LabelExtraction,
@@ -73,6 +74,7 @@ type ItemRow = {
   thumbnail_data: string | null;
   match_status: string;
   match_confidence: unknown;
+  till_name?: string | null;
   created_at: unknown;
   product_id?: number | null;
   product_name?: string | null;
@@ -201,6 +203,7 @@ function mapItem(row: ItemRow): TripItem {
     createdAt: iso(row.created_at),
     productId: row.product_id != null ? Number(row.product_id) : null,
     productName: row.product_name ?? null,
+    tillName: row.till_name ?? null,
   };
 }
 
@@ -244,7 +247,7 @@ async function loadItems(tripId: number): Promise<TripItem[]> {
   const rows = await sql<ItemRow>`
     select i.id, i.trip_id, i.source, i.name, i.brand, i.description, i.barcode, i.category,
            i.quantity, i.quantity_unit, i.weight_value, i.weight_unit, i.unit_price, i.line_price,
-           i.currency, i.raw_text, i.thumbnail_data, i.match_status, i.match_confidence, i.created_at,
+           i.currency, i.raw_text, i.thumbnail_data, i.match_status, i.match_confidence, i.till_name, i.created_at,
            i.product_id, p.name as product_name
       from trip_items i
       left join products p on p.id = i.product_id
@@ -700,160 +703,237 @@ export const deleteReceiptCapture = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
-export const collateTrip = createServerFn({ method: "POST" })
+export const previewCollate = createServerFn({ method: "POST" })
   .validator((input: { tripId: number; provider?: LlmProvider }) => input)
+  .handler(async ({ data }): Promise<CollatePreview> => {
+    const tripId = data.tripId;
+    const provider = data.provider ?? "local";
+    const trip = await loadTrip(tripId);
+    if (!trip) throw new Error("Trip not found");
+    const [items, receipts] = await Promise.all([loadItems(tripId), loadReceipts(tripId)]);
+    if (items.some((i) => i.matchStatus === "processing")) {
+      throw new Error("Still reading a photo — wait, then collate.");
+    }
+    const labels = items.filter(
+      (i) => i.source !== "receipt" && i.matchStatus !== "processing" && i.matchStatus !== "receipt_only",
+    );
+    const portions = receipts
+      .map((r) => r.extracted)
+      .filter((x): x is ReceiptExtraction => !!x);
+    const { stitchReceipts, proposeCollation } = await import("./vision");
+    let receipt: ReceiptExtraction | null = null;
+    if (portions.length > 0) {
+      const stitched = await stitchReceipts(portions, provider);
+      receipt = stitched.ok ? stitched.data : portions[0];
+    }
+    return proposeCollation(tripId, labels, receipt, provider);
+  });
+
+export const applyCollate = createServerFn({ method: "POST" })
+  .validator(
+    (input: {
+      tripId: number;
+      provider?: LlmProvider;
+      pairs: { labelItemId: number | null; receiptIndex: number | null }[];
+    }) => input,
+  )
   .handler(async ({ data }): Promise<TripDetail & { usedLocalCollate: boolean }> => {
     const tripId = data.tripId;
     const provider = data.provider ?? "local";
     const trip = await loadTrip(tripId);
     if (!trip) throw new Error("Trip not found");
     const [items, receipts] = await Promise.all([loadItems(tripId), loadReceipts(tripId)]);
+    if (items.some((i) => i.matchStatus === "processing")) {
+      throw new Error("Still reading a photo — wait, then collate.");
+    }
     const labels = items.filter(
-      (i) =>
-        (i.source === "label" || i.source === "merged") && i.matchStatus !== "processing",
+      (i) => i.source !== "receipt" && i.matchStatus !== "processing" && i.matchStatus !== "receipt_only",
     );
     const portions = receipts
       .map((r) => r.extracted)
       .filter((x): x is ReceiptExtraction => !!x);
-
-    const { stitchReceipts, collateTripData } = await import("./vision");
-    if (items.some((i) => i.matchStatus === "processing")) {
-      throw new Error("Still reading a photo — wait, then collate.");
-    }
+    const { stitchReceipts, previewFromRows } = await import("./vision");
     let receipt: ReceiptExtraction | null = null;
     if (portions.length > 0) {
       const stitched = await stitchReceipts(portions, provider);
       receipt = stitched.ok ? stitched.data : portions[0];
     }
-
-    const collated = await collateTripData(labels, receipt, provider);
-    if (!collated.ok) throw new Error(collated.error);
-
+    const preview = previewFromRows(tripId, labels, receipt, data.pairs);
     const sql = await getSql();
-    const previous = items;
-    const linkedShots = await sql<{ id: number; item_id: number }>`
-      select id, item_id from scan_shots
-       where trip_id = ${tripId} and item_id is not null
-    `;
-    await sql`delete from trip_items where trip_id = ${tripId}`;
+    const keep = new Set<number>(
+      items.filter((i) => i.matchStatus === "processing").map((i) => i.id),
+    );
 
-    const newByName = new Map<string, number>();
-    const newByBarcode = new Map<string, number>();
-    for (const item of collated.data.items) {
-      const id = await insertMerged(sql, tripId, item);
-      newByName.set(item.name.toLowerCase().trim(), id);
-      if (item.barcode) newByBarcode.set(item.barcode, id);
-      await rememberCatalog(sql, {
-        name: item.name,
-        brand: item.brand,
-        barcode: item.barcode,
-        category: item.category,
-        quantityUnit: item.quantityUnit,
-        weightUnit: item.weightUnit,
-        unitPrice: item.unitPrice,
-        linePrice: item.linePrice,
-        weightValue: item.weightValue,
-        currency: item.currency,
-        tripId,
-        storeName: collated.data.storeName ?? trip.storeName,
-      });
-    }
-
-    const prevById = new Map(previous.map((p) => [p.id, p]));
-    for (const shot of linkedShots) {
-      const old = prevById.get(Number(shot.item_id));
-      if (!old) continue;
-      let nid: number | null = old.barcode ? (newByBarcode.get(old.barcode) ?? null) : null;
-      if (nid == null) {
-        const key = old.name.toLowerCase().trim();
-        nid = newByName.get(key) ?? null;
-        if (nid == null) {
-          for (const [name, id] of newByName) {
-            if (name.includes(key) || key.includes(name)) {
-              nid = id;
-              break;
-            }
-          }
-        }
-      }
-      if (nid != null) {
-        await sql`update scan_shots set item_id = ${nid} where id = ${shot.id}`;
-      }
-    }
-
-    const orphans = await sql<{ id: number; last_read_json: string | null }>`
-      select id, last_read_json from scan_shots
-       where trip_id = ${tripId} and kind = 'label' and item_id is null
-    `;
-    for (const orphan of orphans) {
-      let name = "";
-      try {
-        const last = orphan.last_read_json ? JSON.parse(orphan.last_read_json) : null;
-        name = typeof last?.name === "string" ? last.name.toLowerCase().trim() : "";
-      } catch {
-        name = "";
-      }
-      if (!name) continue;
-      let nid = newByName.get(name) ?? null;
-      if (nid == null) {
-        for (const [n, id] of newByName) {
-          if (n.includes(name) || name.includes(n)) {
-            nid = id;
-            break;
-          }
-        }
-      }
-      if (nid != null) {
-        await sql`update scan_shots set item_id = ${nid} where id = ${orphan.id}`;
+    for (const row of preview.rows) {
+      const it = row.item;
+      if (row.labelItemId != null) {
+        keep.add(row.labelItemId);
+        await sql`
+          update trip_items
+             set source = 'merged',
+                 name = ${it.name},
+                 brand = ${it.brand},
+                 description = ${it.description},
+                 barcode = ${it.barcode},
+                 category = ${it.category},
+                 quantity = ${it.quantity},
+                 quantity_unit = ${it.quantityUnit},
+                 weight_value = ${it.weightValue},
+                 weight_unit = ${it.weightUnit},
+                 unit_price = ${it.unitPrice},
+                 line_price = ${it.linePrice},
+                 currency = ${it.currency},
+                 match_status = ${it.matchStatus},
+                 match_confidence = ${it.matchConfidence},
+                 till_name = ${it.tillName ?? row.tillName}
+           where id = ${row.labelItemId}
+        `;
+        await rememberCatalog(sql, {
+          name: it.name,
+          brand: it.brand,
+          barcode: it.barcode,
+          category: it.category,
+          quantityUnit: it.quantityUnit,
+          weightUnit: it.weightUnit,
+          unitPrice: it.unitPrice,
+          linePrice: it.linePrice,
+          weightValue: it.weightValue,
+          currency: it.currency,
+          tripId,
+          storeName: preview.storeName ?? trip.storeName,
+        });
+      } else {
+        const id = await insertMerged(sql, tripId, it);
+        if (id) keep.add(id);
+        await rememberCatalog(sql, {
+          name: it.name,
+          brand: it.brand,
+          barcode: it.barcode,
+          category: it.category,
+          quantityUnit: it.quantityUnit,
+          weightUnit: it.weightUnit,
+          unitPrice: it.unitPrice,
+          linePrice: it.linePrice,
+          weightValue: it.weightValue,
+          currency: it.currency,
+          tripId,
+          storeName: preview.storeName ?? trip.storeName,
+        });
       }
     }
 
-    const when = parseReceiptDate(collated.data.datetime ?? receipt?.datetime ?? null);
+    const stale = items.filter((i) => !keep.has(i.id));
+    for (const gone of stale) {
+      await sql`delete from trip_items where id = ${gone.id}`;
+    }
+
+    const when = parseReceiptDate(preview.datetime);
     if (when) {
       await sql`
         update trips
            set status = 'review',
-               store_name = coalesce(${collated.data.storeName}, store_name),
-               store_location = coalesce(${collated.data.storeLocation}, store_location),
+               store_name = coalesce(${preview.storeName}, store_name),
+               store_location = coalesce(${preview.storeLocation}, store_location),
                started_at = ${when},
-               receipt_subtotal = ${collated.data.subtotal},
-               receipt_tax = ${collated.data.tax},
-               receipt_total = ${collated.data.total},
-               currency = ${collated.data.currency},
-               notes = coalesce(${collated.data.notes}, notes)
+               receipt_subtotal = ${preview.subtotal},
+               receipt_tax = ${preview.tax},
+               receipt_total = ${preview.total},
+               currency = ${preview.currency}
          where id = ${tripId}
       `;
     } else {
       await sql`
         update trips
            set status = 'review',
-               store_name = coalesce(${collated.data.storeName}, store_name),
-               store_location = coalesce(${collated.data.storeLocation}, store_location),
-               receipt_subtotal = ${collated.data.subtotal},
-               receipt_tax = ${collated.data.tax},
-               receipt_total = ${collated.data.total},
-               currency = ${collated.data.currency},
-               notes = coalesce(${collated.data.notes}, notes)
+               store_name = coalesce(${preview.storeName}, store_name),
+               store_location = coalesce(${preview.storeLocation}, store_location),
+               receipt_subtotal = ${preview.subtotal},
+               receipt_tax = ${preview.tax},
+               receipt_total = ${preview.total},
+               currency = ${preview.currency}
          where id = ${tripId}
       `;
     }
 
-    const next = await loadTrip(tripId);
-    if (!next) throw new Error("Trip not found");
     recordAction({
       action: "collateTrip",
       ok: true,
       tripId,
-      detail: `${collated.data.items.length} lines, total ${collated.data.total ?? "?"} ${collated.usedLocalCollate ? "local-fallback" : "llm"}`,
+      detail: `${preview.rows.length} lines, printed ${preview.total ?? "?"} gap ${preview.gap ?? 0}`,
     });
     await checkpointLedger();
+    const next = await loadTrip(tripId);
+    if (!next) throw new Error("Trip not found");
     return {
       trip: next,
       items: await loadItems(tripId),
       receipts: await loadReceipts(tripId),
       shots: await loadShots(tripId),
-      usedLocalCollate: collated.usedLocalCollate,
+      usedLocalCollate: preview.usedLocalCollate,
     };
+  });
+
+export const unmatchItem = createServerFn({ method: "POST" })
+  .validator((input: { itemId: number }) => input)
+  .handler(async ({ data }): Promise<TripItem> => {
+    const sql = await getSql();
+    const rows = await sql<ItemRow>`
+      select i.id, i.trip_id, i.source, i.name, i.brand, i.description, i.barcode, i.category,
+             i.quantity, i.quantity_unit, i.weight_value, i.weight_unit, i.unit_price, i.line_price,
+             i.currency, i.raw_text, i.thumbnail_data, i.match_status, i.match_confidence, i.till_name, i.created_at,
+             i.product_id, p.name as product_name
+        from trip_items i
+        left join products p on p.id = i.product_id
+       where i.id = ${data.itemId}
+       limit 1
+    `;
+    const row = rows[0];
+    if (!row) throw new Error("Item not found");
+    const item = mapItem(row);
+    if (item.matchStatus !== "matched") return item;
+    const tillName = item.tillName;
+    const unitPrice = item.unitPrice;
+    const linePrice = item.linePrice;
+    await sql`
+      update trip_items
+         set match_status = 'label_only',
+             match_confidence = null,
+             till_name = null
+       where id = ${item.id}
+    `;
+    if (tillName) {
+      await insertMerged(sql, item.tripId, {
+        name: tillName,
+        brand: null,
+        description: null,
+        barcode: null,
+        category: null,
+        quantity: item.quantity,
+        quantityUnit: item.quantityUnit,
+        weightValue: null,
+        weightUnit: null,
+        unitPrice,
+        linePrice,
+        currency: item.currency,
+        matchStatus: "receipt_only",
+        matchConfidence: null,
+        thumbnailData: null,
+        tillName,
+      });
+    }
+    recordAction({ action: "unmatchItem", ok: true, tripId: item.tripId, detail: item.name });
+    await checkpointLedger();
+    const next = await sql<ItemRow>`
+      select i.id, i.trip_id, i.source, i.name, i.brand, i.description, i.barcode, i.category,
+             i.quantity, i.quantity_unit, i.weight_value, i.weight_unit, i.unit_price, i.line_price,
+             i.currency, i.raw_text, i.thumbnail_data, i.match_status, i.match_confidence, i.till_name, i.created_at,
+             i.product_id, p.name as product_name
+        from trip_items i
+        left join products p on p.id = i.product_id
+       where i.id = ${item.id}
+       limit 1
+    `;
+    return next[0] ? mapItem(next[0]) : item;
   });
 
 async function insertMerged(
@@ -865,12 +945,12 @@ async function insertMerged(
     insert into trip_items (
       user_id, trip_id, source, name, brand, description, barcode, category,
       quantity, quantity_unit, weight_value, weight_unit, unit_price, line_price,
-      currency, thumbnail_data, match_status, match_confidence
+      currency, thumbnail_data, match_status, match_confidence, till_name
     ) values (
       ${OWNER}, ${tripId}, 'merged', ${item.name}, ${item.brand}, ${item.description},
       ${item.barcode}, ${item.category}, ${item.quantity}, ${item.quantityUnit},
       ${item.weightValue}, ${item.weightUnit}, ${item.unitPrice}, ${item.linePrice},
-      ${item.currency}, ${asFileRef(item.thumbnailData) && !isDataUrl(item.thumbnailData) ? asFileRef(item.thumbnailData) : null}, ${item.matchStatus}, ${item.matchConfidence}
+      ${item.currency}, ${asFileRef(item.thumbnailData) && !isDataUrl(item.thumbnailData) ? asFileRef(item.thumbnailData) : null}, ${item.matchStatus}, ${item.matchConfidence}, ${item.tillName ?? null}
     )
     returning id
   `;

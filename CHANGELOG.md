@@ -2,6 +2,11 @@
 
 All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
+## 0.3.14 — 2026-09-06
+
+- Collate shows a confirm sheet (label ↔ till, leftovers, printed total vs line sum) and does not write until Confirm. Cart keeps one row per label; photos keep their item ids. Matched lines show the till name and can be unmatched. Unmatched sit in their own list. File trip asks once if leftovers remain.
+- Settings → Debug: **Debug this trip** and **Full debug**, with a copyable report box.
+
 ## 0.3.13 — 2026-09-06
 
 - Header shows the app version under the Tillwise name.
