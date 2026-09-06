@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { pendingMigrations } from "../../scripts/migration-plan.mjs";
 
@@ -38,6 +38,16 @@ function ensureDir(path: string): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+function stripStaleLock(dir: string) {
+  for (const path of [`${dir}/postmaster.pid`, `${dir}.lock`]) {
+    try {
+      if (existsSync(path)) unlinkSync(path);
+    } catch {
+      // best-effort — PGlite start still proceeds
+    }
   }
 }
 
@@ -139,13 +149,31 @@ function createNeonSql(): Promise<Sql> {
   return globalRef.__pgSqlPromise__;
 }
 
+let sqlPromise: Promise<Sql> | null = null;
+let ledgerFrozen = false;
+
+export function freezeLedger(): void {
+  ledgerFrozen = true;
+}
+
+export function unfreezeLedger(): void {
+  ledgerFrozen = false;
+}
+
 async function createPgliteSql(): Promise<Sql> {
   // Embedded Postgres, imported on demand so it never loads on the Neon path.
   // One instance per process. When a data dir is set the files live on disk
   // (Docker volume / ./data/pglite) so trips survive restarts.
+  if (ledgerFrozen) {
+    throw new Error("Ledger is being repaired. The app is restarting.");
+  }
   globalRef.__pgliteInstance__ ??= (async () => {
+    if (ledgerFrozen) {
+      throw new Error("Ledger is being repaired. The app is restarting.");
+    }
     const { PGlite } = await import("@electric-sql/pglite");
     const dataDir = resolveWritablePgliteDir();
+    stripStaleLock(dataDir);
     console.info("[db] PGLite on disk at", dataDir);
     const parsers = {
       [OID_INT8]: Number,
@@ -201,8 +229,6 @@ async function createPgliteSql(): Promise<Sql> {
     return result.rows;
   });
 }
-
-let sqlPromise: Promise<Sql> | null = null;
 
 async function createSql(): Promise<Sql> {
   if (typeof window !== "undefined") {
@@ -261,6 +287,7 @@ export function ensureDbReady(): Promise<void> {
 
 /** Drop the live WASM Postgres so repair can rewrite WAL, then the process can exit. */
 export async function releasePglite(): Promise<void> {
+  ledgerFrozen = true;
   const pending = globalRef.__pgliteInstance__;
   globalRef.__pgliteInstance__ = undefined;
   globalRef.__pgSqlPromise__ = undefined;

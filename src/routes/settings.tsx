@@ -538,11 +538,16 @@ function LedgerPanel() {
     mutationFn: () => repairLedger(),
     onSuccess: (res) => {
       if (!res.ok) {
-        toast.error(res.steps[0] ?? "Could not repair");
+        toast.error(res.steps.at(-1) ?? "Could not repair");
+        void inspect.refetch();
         return;
       }
       if (res.restarting) {
-        toast.success("Repair done. Restarting…");
+        toast.success(
+          res.trips != null
+            ? `Repaired. ${res.trips} trip(s) readable. Restarting…`
+            : "Repaired. Restarting…",
+        );
         setWaitingRestart(true);
         const started = Date.now();
         const tick = () => {
@@ -571,24 +576,26 @@ function LedgerPanel() {
         window.setTimeout(tick, 1500);
         return;
       }
-      toast.success("Repair finished. Reload this page.");
+      toast.success(
+        res.trips != null ? `Ledger opens. ${res.trips} trip(s) on disk.` : "Ledger already opens.",
+      );
       void inspect.refetch();
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not repair"),
   });
   const data = inspect.data;
+  const busy = repair.isPending || waitingRestart;
 
   return (
     <section className="mt-8 rounded-2xl bg-surface p-5 shadow-[var(--shadow-border)]">
       <h2 className="font-display text-2xl">Ledger</h2>
       <p className="mt-1 text-sm text-muted">
-        Trips live in a folder on the mapped share. Repair never deletes that folder. It copies
-        first, then clears a leftover lock and torn write-ahead log. PG_VERSION is supposed to be
-        tiny — about 1 KB is normal. After repair the app exits so Docker starts a fresh process
-        (WASM cannot recover in the old one).
+        One button. It copies the folder first and never deletes it. It then tries to open trips in
+        a fresh process. If the log is torn it resets that log and restarts the app. postmaster.pid
+        coming back after a start is normal.
       </p>
       {inspect.isLoading ? (
-        <p className="mt-4 text-sm text-muted">Checking the ledger folder…</p>
+        <p className="mt-4 text-sm text-muted">Looking at the ledger folder…</p>
       ) : inspect.isError ? (
         <p className="mt-4 text-sm text-red-600">
           {inspect.error instanceof Error ? inspect.error.message : "Could not inspect"}
@@ -604,44 +611,25 @@ function LedgerPanel() {
                 : "Missing"
             }
           />
-          <Row
-            k="Size"
-            v={`${data.fileCount} files · ${formatBytes(data.bytes)}`}
-          />
-          <Row k="postmaster.pid" v={data.hasPostmasterPid ? "Present (stale lock)" : "None"} />
-          <Row k="pg_control" v={data.hasControl ? "Present" : "Missing"} />
+          <Row k="Size" v={`${data.fileCount} files · ${formatBytes(data.bytes)}`} />
           {data.backups.length > 0 ? (
             <Row k="Copies kept" v={data.backups.slice(0, 3).join(", ")} />
           ) : null}
         </dl>
       ) : null}
-      {data?.notes.map((note) => (
+      {repair.data?.steps.map((note) => (
         <p key={note} className="mt-3 text-sm text-muted">
           {note}
         </p>
       ))}
-      <div className="mt-5 flex flex-wrap gap-2">
-        <Button
-          type="button"
-          variant="secondary"
-          disabled={inspect.isFetching || waitingRestart}
-          onClick={() => void inspect.refetch()}
-        >
-          {inspect.isFetching ? "Checking…" : "Check ledger"}
-        </Button>
-        <Button
-          type="button"
-          disabled={repair.isPending || waitingRestart || !data?.pgVersion}
-          onClick={() => repair.mutate()}
-        >
-          {repair.isPending || waitingRestart ? "Repairing…" : "Attempt repair"}
-        </Button>
-      </div>
-      {waitingRestart ? (
-        <p className="mt-3 text-sm">Waiting for the app to come back…</p>
-      ) : repair.data?.ok && repair.data.backupPath ? (
-        <p className="mt-3 text-sm">Copy kept as {repair.data.backupPath}</p>
-      ) : null}
+      <Button
+        type="button"
+        className="mt-5"
+        disabled={busy || !data?.pgVersion}
+        onClick={() => repair.mutate()}
+      >
+        {busy ? "Repairing…" : "Repair ledger"}
+      </Button>
     </section>
   );
 }

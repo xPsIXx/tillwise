@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { cp, mkdir, open, readdir, readFile, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -27,6 +28,8 @@ export type LedgerRepairResult = {
   backupPath: string | null;
   steps: string[];
   ok: boolean;
+  trips: number | null;
+  repaired: boolean;
   restartNeeded: boolean;
   restarting: boolean;
 };
@@ -222,7 +225,9 @@ export async function inspectLedger(): Promise<LedgerInspect> {
     );
   }
   if (hasPostmasterPid) {
-    notes.push("postmaster.pid is leftover from a killed container. Repair will remove it.");
+    notes.push(
+      "postmaster.pid is present. While Tillwise is running that file is supposed to be there — Postgres recreates it on every start. Deleting it by hand will not keep it gone.",
+    );
   }
   if (hasLock) notes.push("A lock file is present. Repair will remove it if the process is gone.");
   if (pgVersion && !hasControl) {
@@ -362,53 +367,130 @@ async function resetWal(rootDir: string) {
   await writeFileSynced(controlPath, control);
 }
 
+const PROBE = `
+import { PGlite } from "@electric-sql/pglite";
+const dir = process.env.TILLWISE_LEDGER;
+const pg = new PGlite(dir);
+await pg.waitReady;
+let trips = 0;
+try {
+  const r = await pg.query("select count(*)::int as n from trips");
+  trips = Number(r.rows?.[0]?.n ?? 0);
+} catch {}
+await pg.close();
+process.stdout.write(JSON.stringify({ ok: true, trips }));
+`;
+
+function probeLedger(dir: string): { ok: boolean; trips: number | null; error: string | null } {
+  const result = spawnSync(
+    process.execPath,
+    ["--input-type=module", "-e", PROBE],
+    {
+      cwd: process.cwd(),
+      env: { ...process.env, TILLWISE_LEDGER: dir },
+      encoding: "utf8",
+      timeout: 45_000,
+      maxBuffer: 2_000_000,
+    },
+  );
+  const out = (result.stdout || "").trim();
+  const err = (result.stderr || "").trim();
+  if (result.status === 0 && out) {
+    try {
+      const parsed = JSON.parse(out) as { ok?: boolean; trips?: number };
+      if (parsed.ok) return { ok: true, trips: Number(parsed.trips ?? 0), error: null };
+    } catch {
+      return { ok: false, trips: null, error: out.slice(0, 400) };
+    }
+  }
+  const message = err || out || `probe exited ${result.status}`;
+  return { ok: false, trips: null, error: message.slice(0, 400) };
+}
+
 export async function repairLedger(): Promise<LedgerRepairResult> {
   const before = await inspectLedger();
-  const steps: string[] = [];
+  const fail = (
+    steps: string[],
+    extra?: Partial<LedgerRepairResult>,
+  ): LedgerRepairResult => ({
+    inspect: before,
+    backupPath: extra?.backupPath ?? null,
+    steps,
+    ok: false,
+    trips: extra?.trips ?? null,
+    repaired: false,
+    restartNeeded: false,
+    restarting: false,
+    ...extra,
+  });
+
   if (!before.exists || !before.pgVersion) {
+    return fail(["Stopped: no PG_VERSION. Will not create or overwrite a ledger."]);
+  }
+
+  const steps: string[] = [];
+  const first = probeLedger(before.path);
+  if (first.ok) {
+    steps.push(
+      `Ledger already opens. ${first.trips ?? 0} trip(s) readable. postmaster.pid is normal while the app is running.`,
+    );
+    const inspect = await inspectLedger();
+    inspect.notes = steps;
     return {
-      inspect: before,
+      inspect,
       backupPath: null,
-      steps: ["Stopped: no PG_VERSION. Will not create or overwrite a ledger."],
-      ok: false,
+      steps,
+      ok: true,
+      trips: first.trips,
+      repaired: false,
       restartNeeded: false,
       restarting: false,
     };
   }
+  steps.push(`Open failed (${first.error ?? "Aborted"}). Repairing files, not deleting them.`);
 
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backupPath = `${before.path}.bak-${stamp}`;
   await cp(before.path, backupPath, { recursive: true });
-  steps.push(`Copied ledger to ${basename(backupPath)} (not deleted).`);
+  steps.push(`Copied ledger to ${basename(backupPath)}.`);
 
-  if (await unlinkIfExists(join(before.path, "postmaster.pid"))) {
-    steps.push("Removed leftover postmaster.pid.");
-  } else {
-    steps.push("No postmaster.pid.");
-  }
-  if (await unlinkIfExists(`${before.path}.lock`)) {
-    steps.push("Removed leftover lock file.");
-  }
+  await unlinkIfExists(join(before.path, "postmaster.pid"));
+  await unlinkIfExists(`${before.path}.lock`);
+  steps.push("Cleared pid and lock.");
 
   if (before.hasControl && before.pgVersion === "17") {
     await resetWal(before.path);
-    steps.push("Reset torn write-ahead log; data files were left in place.");
-  } else if (before.pgVersion !== "17") {
-    steps.push(`Skipped WAL reset (PG_VERSION is ${before.pgVersion}, not 17).`);
+    steps.push("Reset torn write-ahead log. Data files stayed in place.");
   } else {
-    steps.push("Skipped WAL reset (no pg_control).");
+    steps.push(
+      before.pgVersion !== "17"
+        ? `Skipped WAL reset (PG_VERSION is ${before.pgVersion}, not 17).`
+        : "Skipped WAL reset (no pg_control).",
+    );
   }
 
+  const second = probeLedger(before.path);
   const inspect = await inspectLedger();
+  if (!second.ok) {
+    inspect.notes = [
+      ...steps,
+      `Still will not open (${second.error ?? "Aborted"}). The copy is ${basename(backupPath)}.`,
+    ];
+    return fail(inspect.notes, { inspect, backupPath: basename(backupPath) });
+  }
+
+  steps.push(`Opened after repair. ${second.trips ?? 0} trip(s) readable.`);
   inspect.notes = [
     ...steps,
-    "The app will exit after this so Docker starts a fresh process on the repaired files.",
+    "The app will restart onto these files. The live folder was not deleted.",
   ];
   return {
     inspect,
     backupPath: basename(backupPath),
     steps,
     ok: true,
+    trips: second.trips,
+    repaired: true,
     restartNeeded: true,
     restarting: false,
   };

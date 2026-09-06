@@ -5,6 +5,8 @@ dir="/data/pglite"
 parent=$(dirname "$dir")
 
 mkdir -p "$dir" 2>/dev/null || true
+# Leftover from SIGKILL (Unraid update). Live Postgres recreates pid after a clean start.
+rm -f "$dir/postmaster.pid" "${dir}.lock"
 
 if [ "$(id -u)" = "0" ]; then
   if [ -d "$parent" ]; then

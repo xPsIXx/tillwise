@@ -2,6 +2,11 @@
 
 All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
+## 0.3.10 — 2026-09-06
+
+- Settings → **Repair ledger** is one button: copy aside, clear pid, reset torn WAL, then verify trips in a fresh Node process. Restarts only if that probe can read the ledger. Never deletes the live folder.
+- Container start strips a leftover `postmaster.pid`. That file coming back while the app is running is normal.
+
 ## 0.3.9 — 2026-09-06
 
 - Ledger path is hard-coded to `/data/pglite`. Map one host folder to `/data`. `PGLITE_DATA_DIR` is ignored. Do not fall back to `/tmp`.

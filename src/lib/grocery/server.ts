@@ -1686,16 +1686,20 @@ export const inspectLedger = createServerFn({ method: "GET" }).handler(async () 
 });
 
 export const repairLedger = createServerFn({ method: "POST" }).handler(async () => {
-  const { releasePglite } = await import("@/lib/db");
+  const { freezeLedger, releasePglite, unfreezeLedger } = await import("@/lib/db");
+  freezeLedger();
   await releasePglite();
   const { repairLedger: run } = await import("@/lib/ledger-repair");
   const result = await run();
-  const restarting = result.ok && process.env.NODE_ENV === "production";
+  const restarting =
+    result.ok && result.repaired && process.env.NODE_ENV === "production";
   if (restarting) {
     setTimeout(() => {
       console.info("[ledger] exiting so Docker restarts onto the repaired files");
       process.exit(0);
-    }, 600);
+    }, 1500);
+  } else {
+    unfreezeLedger();
   }
   return { ...result, restarting };
 });
