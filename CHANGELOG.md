@@ -2,6 +2,10 @@
 
 All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
+## 0.3.11 — 2026-09-06
+
+- Repair ledger works on Postgres 18 (this image). The previous button skipped the log reset because it only knew 17. Errors no longer dump minified JS.
+
 ## 0.3.10 — 2026-09-06
 
 - Settings → **Repair ledger** is one button: copy aside, clear pid, reset torn WAL, then verify trips in a fresh Node process. Restarts only if that probe can read the ledger. Never deletes the live folder.

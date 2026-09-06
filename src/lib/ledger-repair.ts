@@ -1,5 +1,6 @@
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync, unlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { cp, mkdir, open, readdir, readFile, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -35,7 +36,6 @@ export type LedgerRepairResult = {
 };
 
 const PG_CONTROL_FILE_SIZE = 8192;
-const PG_CONTROL_VERSION = 1700;
 const DB_SHUTDOWNED = 1;
 const XLOG_BLCKSZ = 8192;
 const MIN_WAL_SEG_SIZE = 1024 * 1024;
@@ -43,7 +43,8 @@ const MAX_WAL_SEG_SIZE = 1024 * 1024 * 1024;
 const SIZE_OF_XLOG_LONG_PHD = 40;
 const SIZE_OF_XLOG_RECORD = 24;
 const SIZE_OF_CHECKPOINT = 88;
-const XLOG_PAGE_MAGIC = 0xd116;
+const XLOG_PAGE_MAGIC_17 = 0xd116;
+const XLOG_PAGE_MAGIC_18 = 0xd118;
 const XLP_LONG_HEADER = 0x0002;
 const XLOG_CHECKPOINT_SHUTDOWN = 0x00;
 const XLR_BLOCK_ID_DATA_SHORT = 255;
@@ -74,7 +75,6 @@ const OFF = {
   trackCommitTimestamp: 200,
   xlogBlcksz: 224,
   xlogSegSize: 228,
-  crc: 288,
 } as const;
 
 const crcTable = new Uint32Array(256);
@@ -250,19 +250,29 @@ export async function inspectLedger(): Promise<LedgerInspect> {
   };
 }
 
+function findCrcOffset(control: Buffer): number {
+  for (let off = 248; off <= 360; off += 4) {
+    if (crc32c([control.subarray(0, off)]) === control.readUInt32LE(off)) return off;
+  }
+  throw new Error("Could not locate pg_control checksum");
+}
+
 async function resetWal(rootDir: string) {
   const pgVersion = (await readFile(join(rootDir, "PG_VERSION"), "utf8")).trim();
-  if (pgVersion !== "17") {
-    throw new Error(`Cannot reset WAL for PG_VERSION ${pgVersion} (need 17)`);
+  if (pgVersion !== "17" && pgVersion !== "18") {
+    throw new Error(`Cannot reset WAL for PG_VERSION ${pgVersion} (need 17 or 18)`);
   }
   const controlPath = join(rootDir, "global", "pg_control");
   const control = Buffer.from(await readFile(controlPath));
   if (control.length !== PG_CONTROL_FILE_SIZE) {
     throw new Error(`Unexpected pg_control size ${control.length}`);
   }
-  if (control.readUInt32LE(OFF.pgControlVersion) !== PG_CONTROL_VERSION) {
-    throw new Error("Unsupported pg_control version");
+  const controlVersion = control.readUInt32LE(OFF.pgControlVersion);
+  if (controlVersion !== 1700 && controlVersion !== 1800) {
+    throw new Error(`Unsupported pg_control version ${controlVersion}`);
   }
+  const crcOff = findCrcOffset(control);
+  const pageMagic = pgVersion === "18" || controlVersion === 1800 ? XLOG_PAGE_MAGIC_18 : XLOG_PAGE_MAGIC_17;
 
   const walSegSize = control.readUInt32LE(OFF.xlogSegSize);
   const xlogBlcksz = control.readUInt32LE(OFF.xlogBlcksz);
@@ -309,7 +319,7 @@ async function resetWal(rootDir: string) {
   control.writeInt32LE(0, OFF.maxPreparedXacts);
   control.writeInt32LE(64, OFF.maxLocksPerXact);
   control.writeUInt8(0, OFF.trackCommitTimestamp);
-  control.writeUInt32LE(crc32c([control.subarray(0, OFF.crc)]), OFF.crc);
+  control.writeUInt32LE(crc32c([control.subarray(0, crcOff)]), crcOff);
 
   for (const file of await readdir(walDir)) {
     if (/^[0-9A-F]{24}(?:\.partial)?$/.test(file)) {
@@ -334,7 +344,7 @@ async function resetWal(rootDir: string) {
   }
 
   const wal = Buffer.alloc(walSegSize);
-  wal.writeUInt16LE(XLOG_PAGE_MAGIC, 0);
+  wal.writeUInt16LE(pageMagic, 0);
   wal.writeUInt16LE(XLP_LONG_HEADER, 2);
   wal.writeUInt32LE(tli, 4);
   writeUInt64LE(wal, redo - BigInt(SIZE_OF_XLOG_LONG_PHD), 8);
@@ -369,42 +379,64 @@ async function resetWal(rootDir: string) {
 
 const PROBE = `
 import { PGlite } from "@electric-sql/pglite";
-const dir = process.env.TILLWISE_LEDGER;
-const pg = new PGlite(dir);
-await pg.waitReady;
-let trips = 0;
 try {
-  const r = await pg.query("select count(*)::int as n from trips");
-  trips = Number(r.rows?.[0]?.n ?? 0);
-} catch {}
-await pg.close();
-process.stdout.write(JSON.stringify({ ok: true, trips }));
+  const dir = process.env.TILLWISE_LEDGER;
+  const pg = new PGlite(dir);
+  await pg.waitReady;
+  let trips = 0;
+  try {
+    const r = await pg.query("select count(*)::int as n from trips");
+    trips = Number(r.rows?.[0]?.n ?? 0);
+  } catch {}
+  await pg.close();
+  process.stdout.write(JSON.stringify({ ok: true, trips }));
+} catch (e) {
+  const msg = e instanceof Error ? e.message : String(e);
+  process.stdout.write(JSON.stringify({ ok: false, error: msg.slice(0, 180) }));
+  process.exit(1);
+}
 `;
 
+function tidyProbeError(text: string): string {
+  if (/Aborted/i.test(text)) return "Postgres aborted on open (torn write-ahead log).";
+  const panic = text.match(/PANIC:\s*[^\n]+/);
+  if (panic) return panic[0].slice(0, 180);
+  if (/import\{/.test(text) || /chunk-/.test(text)) {
+    return "Could not start Postgres on this folder.";
+  }
+  return text.replace(/\s+/g, " ").trim().slice(0, 180);
+}
+
 function probeLedger(dir: string): { ok: boolean; trips: number | null; error: string | null } {
-  const result = spawnSync(
-    process.execPath,
-    ["--input-type=module", "-e", PROBE],
-    {
+  const file = join(tmpdir(), `tillwise-probe-${process.pid}.mjs`);
+  writeFileSync(file, PROBE, "utf8");
+  try {
+    const result = spawnSync(process.execPath, [file], {
       cwd: process.cwd(),
       env: { ...process.env, TILLWISE_LEDGER: dir },
       encoding: "utf8",
       timeout: 45_000,
       maxBuffer: 2_000_000,
-    },
-  );
-  const out = (result.stdout || "").trim();
-  const err = (result.stderr || "").trim();
-  if (result.status === 0 && out) {
+    });
+    const out = (result.stdout || "").trim();
+    const err = (result.stderr || "").trim();
+    if (out) {
+      try {
+        const parsed = JSON.parse(out) as { ok?: boolean; trips?: number; error?: string };
+        if (parsed.ok) return { ok: true, trips: Number(parsed.trips ?? 0), error: null };
+        return { ok: false, trips: null, error: tidyProbeError(parsed.error || err || "open failed") };
+      } catch {
+        return { ok: false, trips: null, error: tidyProbeError(out) };
+      }
+    }
+    return { ok: false, trips: null, error: tidyProbeError(err || `probe exited ${result.status}`) };
+  } finally {
     try {
-      const parsed = JSON.parse(out) as { ok?: boolean; trips?: number };
-      if (parsed.ok) return { ok: true, trips: Number(parsed.trips ?? 0), error: null };
+      unlinkSync(file);
     } catch {
-      return { ok: false, trips: null, error: out.slice(0, 400) };
+      /* ignore */
     }
   }
-  const message = err || out || `probe exited ${result.status}`;
-  return { ok: false, trips: null, error: message.slice(0, 400) };
 }
 
 export async function repairLedger(): Promise<LedgerRepairResult> {
@@ -458,13 +490,13 @@ export async function repairLedger(): Promise<LedgerRepairResult> {
   await unlinkIfExists(`${before.path}.lock`);
   steps.push("Cleared pid and lock.");
 
-  if (before.hasControl && before.pgVersion === "17") {
+  if (before.hasControl && (before.pgVersion === "17" || before.pgVersion === "18")) {
     await resetWal(before.path);
-    steps.push("Reset torn write-ahead log. Data files stayed in place.");
+    steps.push(`Reset torn write-ahead log (Postgres ${before.pgVersion}). Data files stayed in place.`);
   } else {
     steps.push(
-      before.pgVersion !== "17"
-        ? `Skipped WAL reset (PG_VERSION is ${before.pgVersion}, not 17).`
+      before.pgVersion && before.pgVersion !== "17" && before.pgVersion !== "18"
+        ? `Skipped WAL reset (PG_VERSION is ${before.pgVersion}, need 17 or 18).`
         : "Skipped WAL reset (no pg_control).",
     );
   }
