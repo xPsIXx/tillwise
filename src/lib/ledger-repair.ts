@@ -1,6 +1,7 @@
 import { existsSync, writeFileSync, unlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { cp, mkdir, open, readdir, readFile, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -377,8 +378,13 @@ async function resetWal(rootDir: string) {
   await writeFileSynced(controlPath, control);
 }
 
-const PROBE = `
-import { PGlite } from "@electric-sql/pglite";
+function pgliteEntryUrl(): string {
+  const req = createRequire(join(process.cwd(), "package.json"));
+  return pathToFileURL(req.resolve("@electric-sql/pglite")).href;
+}
+
+function probeScript(entryUrl: string): string {
+  return `import { PGlite } from ${JSON.stringify(entryUrl)};
 try {
   const dir = process.env.TILLWISE_LEDGER;
   const pg = new PGlite(dir);
@@ -396,11 +402,13 @@ try {
   process.exit(1);
 }
 `;
+}
 
 function tidyProbeError(text: string): string {
   if (/Aborted/i.test(text)) return "Postgres aborted on open (torn write-ahead log).";
   const panic = text.match(/PANIC:\s*[^\n]+/);
   if (panic) return panic[0].slice(0, 180);
+  if (/ERR_MODULE_NOT_FOUND/i.test(text)) return "Probe could not load PGLite from this image.";
   if (/import\{/.test(text) || /chunk-/.test(text)) {
     return "Could not start Postgres on this folder.";
   }
@@ -408,8 +416,8 @@ function tidyProbeError(text: string): string {
 }
 
 function probeLedger(dir: string): { ok: boolean; trips: number | null; error: string | null } {
-  const file = join(tmpdir(), `tillwise-probe-${process.pid}.mjs`);
-  writeFileSync(file, PROBE, "utf8");
+  const file = join(process.cwd(), ".tillwise-probe.mjs");
+  writeFileSync(file, probeScript(pgliteEntryUrl()), "utf8");
   try {
     const result = spawnSync(process.execPath, [file], {
       cwd: process.cwd(),

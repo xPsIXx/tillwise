@@ -2,6 +2,10 @@
 
 All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
+## 0.3.12 — 2026-09-06
+
+- Repair probe loads PGLite from the app directory (v0.3.11 looked in `/tmp` and reported a missing `@electric` package). WAL reset for Postgres 18 already ran on your share.
+
 ## 0.3.11 — 2026-09-06
 
 - Repair ledger works on Postgres 18 (this image). The previous button skipped the log reset because it only knew 17. Errors no longer dump minified JS.
