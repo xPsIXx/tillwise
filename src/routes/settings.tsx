@@ -15,7 +15,7 @@ import {
   type ScanSettings,
   type VisionDetail,
 } from "@/lib/grocery/settings";
-import { getLlmConfig, listLlmModels, saveLlmConfig } from "@/lib/grocery/server";
+import { getLlmConfig, inspectLedger, listLlmModels, repairLedger, saveLlmConfig } from "@/lib/grocery/server";
 import { type EngineProgress } from "@/lib/grocery/tfjs";
 import { cn } from "@/lib/utils";
 
@@ -180,6 +180,8 @@ function SettingsPage() {
         Detect on the phone, then snap. Reading and collation use the engine you pick — on-device,
         your local server, or a BYOK API.
       </p>
+
+      <LedgerPanel />
 
       {engine && (
         <div className="mt-5 rounded-xl bg-surface px-4 py-3 shadow-[var(--shadow-border)]">
@@ -517,6 +519,130 @@ function SettingsPage() {
         </dl>
       </section>
     </main>
+  );
+}
+
+function formatBytes(n: number) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round((n / 1024) * 10) / 10} KB`;
+  return `${Math.round((n / (1024 * 1024)) * 10) / 10} MB`;
+}
+
+function LedgerPanel() {
+  const [waitingRestart, setWaitingRestart] = useState(false);
+  const inspect = useQuery({
+    queryKey: ["ledger"],
+    queryFn: () => inspectLedger(),
+  });
+  const repair = useMutation({
+    mutationFn: () => repairLedger(),
+    onSuccess: (res) => {
+      if (!res.ok) {
+        toast.error(res.steps[0] ?? "Could not repair");
+        return;
+      }
+      if (res.restarting) {
+        toast.success("Repair done. Restarting…");
+        setWaitingRestart(true);
+        const started = Date.now();
+        const tick = () => {
+          void fetch("/", { cache: "no-store" })
+            .then((r) => {
+              if (r.ok && Date.now() - started > 2500) {
+                window.location.reload();
+                return;
+              }
+              if (Date.now() - started > 60_000) {
+                toast.error("Restart is taking too long. Start Tillwise from Unraid.");
+                setWaitingRestart(false);
+                return;
+              }
+              window.setTimeout(tick, 1000);
+            })
+            .catch(() => {
+              if (Date.now() - started > 60_000) {
+                toast.error("Restart is taking too long. Start Tillwise from Unraid.");
+                setWaitingRestart(false);
+                return;
+              }
+              window.setTimeout(tick, 1000);
+            });
+        };
+        window.setTimeout(tick, 1500);
+        return;
+      }
+      toast.success("Repair finished. Reload this page.");
+      void inspect.refetch();
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not repair"),
+  });
+  const data = inspect.data;
+
+  return (
+    <section className="mt-8 rounded-2xl bg-surface p-5 shadow-[var(--shadow-border)]">
+      <h2 className="font-display text-2xl">Ledger</h2>
+      <p className="mt-1 text-sm text-muted">
+        Trips live in a folder on the mapped share. Repair never deletes that folder. It copies
+        first, then clears a leftover lock and torn write-ahead log. PG_VERSION is supposed to be
+        tiny — about 1 KB is normal. After repair the app exits so Docker starts a fresh process
+        (WASM cannot recover in the old one).
+      </p>
+      {inspect.isLoading ? (
+        <p className="mt-4 text-sm text-muted">Checking the ledger folder…</p>
+      ) : inspect.isError ? (
+        <p className="mt-4 text-sm text-red-600">
+          {inspect.error instanceof Error ? inspect.error.message : "Could not inspect"}
+        </p>
+      ) : data ? (
+        <dl className="mt-4 space-y-2 text-sm">
+          <Row k="Folder" v={data.path} />
+          <Row
+            k="PG_VERSION"
+            v={
+              data.pgVersion
+                ? `${data.pgVersion} · ${formatBytes(data.pgVersionBytes ?? 0)}`
+                : "Missing"
+            }
+          />
+          <Row
+            k="Size"
+            v={`${data.fileCount} files · ${formatBytes(data.bytes)}`}
+          />
+          <Row k="postmaster.pid" v={data.hasPostmasterPid ? "Present (stale lock)" : "None"} />
+          <Row k="pg_control" v={data.hasControl ? "Present" : "Missing"} />
+          {data.backups.length > 0 ? (
+            <Row k="Copies kept" v={data.backups.slice(0, 3).join(", ")} />
+          ) : null}
+        </dl>
+      ) : null}
+      {data?.notes.map((note) => (
+        <p key={note} className="mt-3 text-sm text-muted">
+          {note}
+        </p>
+      ))}
+      <div className="mt-5 flex flex-wrap gap-2">
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={inspect.isFetching || waitingRestart}
+          onClick={() => void inspect.refetch()}
+        >
+          {inspect.isFetching ? "Checking…" : "Check ledger"}
+        </Button>
+        <Button
+          type="button"
+          disabled={repair.isPending || waitingRestart || !data?.pgVersion}
+          onClick={() => repair.mutate()}
+        >
+          {repair.isPending || waitingRestart ? "Repairing…" : "Attempt repair"}
+        </Button>
+      </div>
+      {waitingRestart ? (
+        <p className="mt-3 text-sm">Waiting for the app to come back…</p>
+      ) : repair.data?.ok && repair.data.backupPath ? (
+        <p className="mt-3 text-sm">Copy kept as {repair.data.backupPath}</p>
+      ) : null}
+    </section>
   );
 }
 

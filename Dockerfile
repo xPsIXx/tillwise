@@ -25,8 +25,7 @@ ENV NODE_ENV=production \
     PORT=8080 \
     HOST=0.0.0.0 \
     NITRO_PORT=8080 \
-    NITRO_HOST=0.0.0.0 \
-    PGLITE_DATA_DIR=/data/pglite
+    NITRO_HOST=0.0.0.0
 RUN apt-get update \
   && apt-get install -y --no-install-recommends curl ca-certificates gosu \
   && rm -rf /var/lib/apt/lists/* \

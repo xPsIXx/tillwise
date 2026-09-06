@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-dir="${PGLITE_DATA_DIR:-/data/pglite}"
+dir="/data/pglite"
 parent=$(dirname "$dir")
 
 mkdir -p "$dir" 2>/dev/null || true

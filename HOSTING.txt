@@ -48,10 +48,9 @@ Copy these into the process environment. Environment wins over the Settings form
   BYOK_API_KEY     API key for that endpoint
   BYOK_VISION_MODEL  Vision model id
   BYOK_TEXT_MODEL  Text model for collation (falls back to vision)
-  DATABASE_URL     Optional Postgres URL (Neon, etc.). If unset, the
-                   shipped PGLite files under PGLITE_DATA_DIR are used.
-  PGLITE_DATA_DIR  Folder for those files. Docker default: /data/pglite
-                   Set to `memory` to wipe on every restart.
+  DATABASE_URL     Optional Postgres URL (Neon, etc.). Leave blank on Unraid.
+                   The ledger is always /data/pglite inside the container.
+                   Map one host folder to /data.
 
 The app calls:
 

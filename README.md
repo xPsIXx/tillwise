@@ -30,14 +30,13 @@ Nothing is hard-coded. **Environment wins over the Settings form.** If you leave
 
 ### Persistence
 
+Map **one** host folder to `/data`. The ledger is always `/data/pglite` inside the container. There is no database-path environment variable.
+
 | Variable | Default | Purpose |
 |---|---|---|
-| `PGLITE_DATA_DIR` | `/data/pglite` in Docker, `./data/pglite` in `npm run dev` | Folder for the embedded Postgres files (trips, photos, settings, product memory). |
-| `DATABASE_URL` | unset | Optional real Postgres / Neon URL. If unset, PGLite on disk is used. Set to nothing on Unraid unless you have a Postgres URL. |
+| `DATABASE_URL` | unset | Optional real Postgres / Neon URL. Leave blank on Unraid. |
 | `PORT` | `8080` | HTTP port inside the container. |
 | `HOST` | `0.0.0.0` | Bind address. |
-
-`PGLITE_DATA_DIR=memory` wipes the ledger every restart.
 
 Mount a volume at `/data` so `/data/pglite` survives image updates.
 
@@ -83,7 +82,6 @@ docker pull ghcr.io/xpsixx/tillwise:latest
 ```bash
 docker run -d --name tillwise -p 8080:8080 \
   -v tillwise-data:/data \
-  -e PGLITE_DATA_DIR=/data/pglite \
   -e LLM_BASE_URL=http://192.168.1.10:8088 \
   -e VISION_MODEL=Qwen3-VL-8B \
   -e TEXT_MODEL=Qwen3.5-9B \
@@ -120,7 +118,8 @@ Add only the variables you use. Empty values are fine.
 
 **Required for persistence**
 
-- `PGLITE_DATA_DIR` = `/data/pglite`
+- Host path `/mnt/user/appdata/tillwise` → container `/data`
+- Do not set a database-path variable. The ledger is `/data/pglite`.
 
 **Optional local LLM**
 

@@ -1680,6 +1680,26 @@ export const getGroceryAnalytics = createServerFn({ method: "GET" }).handler(
   },
 );
 
+export const inspectLedger = createServerFn({ method: "GET" }).handler(async () => {
+  const { inspectLedger: run } = await import("@/lib/ledger-repair");
+  return run();
+});
+
+export const repairLedger = createServerFn({ method: "POST" }).handler(async () => {
+  const { releasePglite } = await import("@/lib/db");
+  await releasePglite();
+  const { repairLedger: run } = await import("@/lib/ledger-repair");
+  const result = await run();
+  const restarting = result.ok && process.env.NODE_ENV === "production";
+  if (restarting) {
+    setTimeout(() => {
+      console.info("[ledger] exiting so Docker restarts onto the repaired files");
+      process.exit(0);
+    }, 600);
+  }
+  return { ...result, restarting };
+});
+
 export const getLlmConfig = createServerFn({ method: "GET" }).handler(async () => {
   const { loadLlmConfig } = await import("./llm");
   return loadLlmConfig();

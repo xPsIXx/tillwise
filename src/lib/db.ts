@@ -21,21 +21,14 @@ const databaseUrl =
 export const dbSource: DbSource = databaseUrl ? "neon" : "pglite";
 
 /**
- * Disk folder for the embedded PGLite files when `DATABASE_URL` is unset.
- *
- * - `PGLITE_DATA_DIR=/data/pglite` — explicit path (Docker default)
- * - `PGLITE_DATA_DIR=memory` — ephemeral, wiped on process exit
- * - unset in production — `/data/pglite`
- * - unset in dev — `./data/pglite` so `npm run dev` restarts keep trips
+ * Disk folder for the embedded ledger. Not configurable.
+ * Docker / Unraid: map the host share to `/data` only. Files live at `/data/pglite`.
+ * Local `npm run dev`: `./data/pglite`.
  */
-export function pgliteDataDir(): string | undefined {
-  const raw =
-    typeof process !== "undefined" ? process.env.PGLITE_DATA_DIR : undefined;
-  const trimmed = raw?.trim();
-  if (trimmed === "memory" || trimmed === ":memory:") return undefined;
-  if (trimmed) return resolve(trimmed);
-  if (typeof process === "undefined") return undefined;
-  if (process.env.NODE_ENV === "production") return resolve("/data/pglite");
+export function pgliteDataDir(): string {
+  if (typeof process !== "undefined" && process.env.NODE_ENV === "production") {
+    return resolve("/data/pglite");
+  }
   return resolve(process.cwd(), "data", "pglite");
 }
 
@@ -48,26 +41,15 @@ function ensureDir(path: string): boolean {
   }
 }
 
-/** Create the data folder, or a writable fallback if the volume is root-owned. */
-export function resolveWritablePgliteDir(): string | undefined {
-  const preferred = pgliteDataDir();
-  if (!preferred) return undefined;
-  if (ensureDir(preferred)) return preferred;
-  const fallbacks = [
-    resolve("/tmp/tillwise-pglite"),
-    resolve(process.cwd(), "data", "pglite"),
-  ];
-  for (const next of fallbacks) {
-    if (next === preferred) continue;
-    if (ensureDir(next)) {
-      console.warn(
-        `[db] ${preferred} is not writable; using ${next}. Mount /data owned by uid 1000 to persist trips.`,
-      );
-      return next;
-    }
+/** Create `/data/pglite` (or the dev folder). Do not fall back to /tmp — that drops trips on image updates. */
+export function resolveWritablePgliteDir(): string {
+  const dir = pgliteDataDir();
+  if (!ensureDir(dir)) {
+    throw new Error(
+      `Ledger folder ${dir} is not writable. Map your Unraid appdata folder to /data.`,
+    );
   }
-  console.error(`[db] No writable PGLite folder (tried ${preferred}).`);
-  return undefined;
+  return dir;
 }
 
 /**
@@ -164,16 +146,13 @@ async function createPgliteSql(): Promise<Sql> {
   globalRef.__pgliteInstance__ ??= (async () => {
     const { PGlite } = await import("@electric-sql/pglite");
     const dataDir = resolveWritablePgliteDir();
-    console.info("[db] PGLite", dataDir ? `on disk at ${dataDir}` : "in memory");
+    console.info("[db] PGLite on disk at", dataDir);
     const parsers = {
       [OID_INT8]: Number,
       [OID_DATE]: identity,
       [OID_INTERVAL]: identity,
     };
-    // First-arg path selects NodeFS; omit it for the in-memory VFS.
-    const pg = dataDir
-      ? new PGlite(dataDir, { parsers })
-      : new PGlite({ parsers });
+    const pg = new PGlite(dataDir, { parsers });
     await pg.waitReady;
     await pg.exec(
       "create table if not exists _migrations (name text primary key, applied_at timestamptz not null default now())",
@@ -278,6 +257,22 @@ export async function getPglite(): Promise<import("@electric-sql/pglite").PGlite
 export function ensureDbReady(): Promise<void> {
   if (dbSource !== "pglite") return Promise.resolve();
   return getSql().then(() => undefined);
+}
+
+/** Drop the live WASM Postgres so repair can rewrite WAL, then the process can exit. */
+export async function releasePglite(): Promise<void> {
+  const pending = globalRef.__pgliteInstance__;
+  globalRef.__pgliteInstance__ = undefined;
+  globalRef.__pgSqlPromise__ = undefined;
+  globalRef.__pgliteMigrateChain__ = undefined;
+  sqlPromise = null;
+  if (!pending) return;
+  try {
+    const pg = await pending;
+    await pg.close();
+  } catch {
+    // WASM already aborted — files still need repair; a process restart follows.
+  }
 }
 
 // Server-only eager start: kick PGLite bootstrap as soon as this module loads in

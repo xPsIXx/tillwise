@@ -2,6 +2,11 @@
 
 All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
+## 0.3.9 — 2026-09-06
+
+- Ledger path is hard-coded to `/data/pglite`. Map one host folder to `/data`. `PGLITE_DATA_DIR` is ignored. Do not fall back to `/tmp`.
+- Settings → Ledger: check PG_VERSION, leftover `postmaster.pid`, and attempt repair (copy aside first, then clear locks and reset torn WAL). Never deletes the live folder. After repair the process exits so Docker starts a fresh one (WASM cannot recover after `Aborted()`).
+
 ## 0.3.8 — 2026-09-06
 
 - Scale-sticker names prefer the printed produce line (`Capsicum Yellow`, `Australian Carrots`) over store-logo OCR (`LuCug`).
