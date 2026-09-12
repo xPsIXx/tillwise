@@ -4,6 +4,10 @@ All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
 ## Unreleased
 
+## 0.3.17 — 2026-09-12
+
+- Stats: Catalog (search name/barcode, sort cheapest/rising/recent, shops + history, CSV). Spend is a separate view.
+
 ## 0.3.16 — 2026-09-12
 
 - Debug this trip / Full debug wait up to 10 minutes. The prompt is compacted (no pretty JSON, no full OCR dumps).

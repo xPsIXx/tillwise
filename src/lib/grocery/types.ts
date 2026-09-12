@@ -254,9 +254,14 @@ export type ProduceWatch = {
   key: string;
   productId: number | null;
   name: string;
+  barcode: string | null;
+  aliases: string[];
+  seenCount: number;
   currency: string;
   cheapestStore: string;
   cheapestUnit: number;
+  lastStore: string;
+  lastObservedAt: string;
   lastUnit: number;
   prevUnit: number | null;
   changePct: number | null;

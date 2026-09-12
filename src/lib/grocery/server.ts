@@ -2555,6 +2555,7 @@ export const listProducePrices = createServerFn({ method: "GET" }).handler(
       product_id: number | null;
       product_name: string | null;
       name: string;
+      barcode: string | null;
       store_name: string | null;
       unit_price: unknown;
       line_price: unknown;
@@ -2562,7 +2563,7 @@ export const listProducePrices = createServerFn({ method: "GET" }).handler(
       currency: string;
       observed_at: unknown;
     }>`
-      select o.product_id, p.name as product_name, o.name, o.store_name,
+      select o.product_id, p.name as product_name, o.name, o.barcode, o.store_name,
              o.unit_price, o.line_price, o.weight_value, o.currency, o.observed_at
         from price_observations o
         left join products p on p.id = o.product_id
@@ -2572,6 +2573,8 @@ export const listProducePrices = createServerFn({ method: "GET" }).handler(
       key: string;
       productId: number | null;
       name: string;
+      barcode: string | null;
+      aliases: Set<string>;
       currency: string;
       history: ProduceWatch["history"];
     };
@@ -2585,11 +2588,15 @@ export const listProducePrices = createServerFn({ method: "GET" }).handler(
         key,
         productId: row.product_id != null ? Number(row.product_id) : null,
         name: row.product_name || row.name,
+        barcode: row.barcode,
+        aliases: new Set<string>(),
         currency: row.currency || "AED",
         history: [],
       };
       acc.history.push({ observedAt: iso(row.observed_at), store, unitPrice: unit });
       if (row.product_name) acc.name = row.product_name;
+      if (row.barcode) acc.barcode = row.barcode;
+      if (row.name) acc.aliases.add(row.name);
       groups.set(key, acc);
     }
     const watches: ProduceWatch[] = [];
@@ -2615,9 +2622,14 @@ export const listProducePrices = createServerFn({ method: "GET" }).handler(
         key: acc.key,
         productId: acc.productId,
         name: acc.name,
+        barcode: acc.barcode,
+        aliases: [...acc.aliases].filter((a) => a !== acc.name),
+        seenCount: acc.history.length,
         currency: acc.currency,
         cheapestStore: cheapest.store,
         cheapestUnit: cheapest.unitPrice,
+        lastStore: last.store,
+        lastObservedAt: last.observedAt,
         lastUnit: last.unitPrice,
         prevUnit: prev ? prev.unitPrice : null,
         changePct:
