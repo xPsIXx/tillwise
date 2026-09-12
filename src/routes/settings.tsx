@@ -15,6 +15,7 @@ import {
   type VisionDetail,
 } from "@/lib/grocery/settings";
 import { getLlmConfig, inspectLedger, listLlmModels, listTrips, repairLedger, saveLlmConfig, troubleshootTrip, exportLedger, getOffConfig, saveOffConfig, searchOffStores, testOffLogin } from "@/lib/grocery/server";
+import { NearbyShopPicker } from "@/components/scanner/nearby-shop";
 import { statusLabel, tripDate } from "@/lib/grocery/format";
 import { type EngineProgress } from "@/lib/grocery/tfjs";
 import { cn } from "@/lib/utils";
@@ -773,8 +774,16 @@ function OpenFoodPanel() {
     enabled: storeQ.trim().length >= 3,
   });
   const pick = useMutation({
-    mutationFn: (hit: { osmId: number; osmType: "NODE" | "WAY" | "RELATION"; name: string }) =>
-      saveOffConfig({ data: { osmId: hit.osmId, osmType: hit.osmType, osmName: hit.name } }),
+    mutationFn: (hit: { osmId: number; osmType: "NODE" | "WAY" | "RELATION"; name: string; lat?: number; lon?: number }) =>
+      saveOffConfig({
+        data: {
+          osmId: hit.osmId,
+          osmType: hit.osmType,
+          osmName: hit.name,
+          lat: hit.lat ?? null,
+          lon: hit.lon ?? null,
+        },
+      }),
     onSuccess: (res) => {
       toast.success(`Shop set to ${res.osmName?.split(",")[0]}`);
       void qc.invalidateQueries({ queryKey: ["off-config"] });
@@ -789,7 +798,7 @@ function OpenFoodPanel() {
         <a className="underline-offset-2 hover:underline" href="https://world.openfoodfacts.org" target="_blank" rel="noreferrer">
           openfoodfacts.org
         </a>
-        . Username, not email. Trip → More sends the till photo as proof of what you paid, plus each line (name, barcode if any, AED). Card/loyalty boxes from the till read are blacked out first (footer fallback if none). A check on the photo means it was already sent. Shelf labels are not sent. Pick the OSM shop so the receipt is tied to that store.
+        . Username, not email. Trip → More sends the till photo as proof of what you paid. Shelf snaps send a price-tag proof. Open Prices needs the exact branch on the map (OSM), not a typed chain name. Use your location below, or search.
       </p>
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
         <label className="text-xs text-muted">
@@ -816,7 +825,7 @@ function OpenFoodPanel() {
         </Button>
       </div>
       <label className="mt-5 block text-xs text-muted">
-        Shop on the map (UAE)
+        Shop on the map (this branch)
         <Input
           className="mt-1"
           value={storeQ}
@@ -824,10 +833,11 @@ function OpenFoodPanel() {
           placeholder="Lulu Al Wahda Abu Dhabi"
         />
       </label>
+      <NearbyShopPicker />
       {cfg.data?.osmName ? (
         <p className="mt-2 text-sm">Using {cfg.data.osmName.split(",")[0]}</p>
       ) : (
-        <p className="mt-2 text-sm text-muted">No shop picked yet.</p>
+        <p className="mt-2 text-sm text-muted">No shop picked yet. Use location or type a name.</p>
       )}
       {(stores.data ?? []).length > 0 ? (
         <ul className="mt-2 space-y-1">

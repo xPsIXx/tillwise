@@ -2872,6 +2872,8 @@ export const saveOffConfig = createServerFn({ method: "POST" })
       osmId?: number | null;
       osmType?: "NODE" | "WAY" | "RELATION" | null;
       osmName?: string | null;
+      lat?: number | null;
+      lon?: number | null;
     }) => input,
   )
   .handler(async ({ data }) => {
@@ -2884,6 +2886,13 @@ export const searchOffStores = createServerFn({ method: "POST" })
   .handler(async ({ data: q }) => {
     const { searchOffStores: search } = await import("./openfood");
     return search(q);
+  });
+
+export const nearbyOffStores = createServerFn({ method: "POST" })
+  .validator((input: { lat: number; lon: number }) => input)
+  .handler(async ({ data }) => {
+    const { nearbyOffStores: nearby } = await import("./openfood");
+    return nearby(data.lat, data.lon);
   });
 
 export const testOffLogin = createServerFn({ method: "POST" }).handler(async () => {

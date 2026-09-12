@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { NearbyShopPicker } from "@/components/scanner/nearby-shop";
+import { shortShopName } from "@/lib/grocery/geo";
 import type { LabelExtraction } from "@/lib/grocery/types";
 
 export type ShelfDraft = {
@@ -46,7 +48,7 @@ export function ShelfSheet({
         <h3 className="font-display text-2xl">Shelf price</h3>
         <p className="mt-1 text-sm text-muted">
           Not a trip. Saved to your prices for this shop. Open Prices gets the photo if you send.
-          Shop name is almost never on the sticker — use the store you picked in Settings.
+          Shop is the branch on the map — use location if the sticker has no name.
         </p>
         <img src={draft.image} alt="" className="mt-4 max-h-56 w-full rounded-xl object-contain bg-elevated" />
         <label className="mt-4 block text-xs text-muted">
@@ -73,6 +75,7 @@ export function ShelfSheet({
             <Input className="mt-1" value={store} onChange={(e) => setStore(e.target.value)} required />
           </label>
         </div>
+        <NearbyShopPicker onPicked={(hit) => setStore(shortShopName(hit.name) || hit.name)} />
         <div className="mt-5 flex flex-col gap-2">
           <Button type="submit" disabled={busy}>
             {busy ? "Saving…" : canSend ? "Save and send to Open Prices" : "Save to my prices"}

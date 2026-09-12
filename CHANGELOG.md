@@ -2,6 +2,10 @@
 
 All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
+## 0.3.21 — 2026-09-12
+
+- Open Prices shop: “Use my location” lists grocery shops on the map near you. One tap sets the exact branch (OSM pin). Typed search still works.
+
 ## 0.3.20 — 2026-09-12
 
 - Home + Scan: log a shelf price without a trip. Saved to your price history per shop. Optionally sent to Open Prices as a price-tag proof. Shop name comes from Settings (OSM), not the sticker.

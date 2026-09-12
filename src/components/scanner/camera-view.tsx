@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { detectBarcode } from "@/lib/grocery/detect";
 import { readLabelCapture } from "@/lib/grocery/read-capture";
 import { ShelfSheet, type ShelfDraft } from "@/components/scanner/shelf-sheet";
+import { NearbyShopPicker } from "@/components/scanner/nearby-shop";
 import {
   blobToDataUrl,
   captureCanvas,
@@ -887,19 +888,22 @@ export function CameraView({
 
       <div className="shrink-0 border-t border-border bg-bg px-4 pb-3 pt-3">
         {contribute ? (
-          <div className="mb-3 flex items-center justify-between gap-2 rounded-xl bg-elevated px-3 py-2">
-            <p className="text-sm">
-              Shelf prices — not {tripId ? "this trip" : "a trip"}
-            </p>
-            {onContribute ? (
-              <button
-                type="button"
-                className="text-xs font-medium text-muted underline-offset-2 hover:underline"
-                onClick={() => onContribute(false)}
-              >
-                {tripId ? "Back to trip scan" : "Cancel"}
-              </button>
-            ) : null}
+          <div className="mb-3 space-y-2 rounded-xl bg-elevated px-3 py-2">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm">
+                Shelf prices — not {tripId ? "this trip" : "a trip"}
+              </p>
+              {onContribute ? (
+                <button
+                  type="button"
+                  className="text-xs font-medium text-muted underline-offset-2 hover:underline"
+                  onClick={() => onContribute(false)}
+                >
+                  {tripId ? "Back to trip scan" : "Cancel"}
+                </button>
+              ) : null}
+            </div>
+            <NearbyShopPicker />
           </div>
         ) : (
           <>
