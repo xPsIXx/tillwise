@@ -293,6 +293,7 @@ export async function createPrice(opts: {
   proofId: number;
   barcode?: string | null;
   name?: string | null;
+  categoryTag?: string | null;
   price: number;
   currency: string;
   date: string;
@@ -301,6 +302,8 @@ export async function createPrice(opts: {
   perKg?: boolean;
 }): Promise<number> {
   const tok = await token();
+  const code = opts.barcode?.replace(/\D/g, "") ?? "";
+  const tag = opts.categoryTag?.trim() || (!code ? categoryTagFromName(opts.name) : null);
   const body: Record<string, unknown> = {
     proof_id: opts.proofId,
     price: opts.price,
@@ -308,11 +311,19 @@ export async function createPrice(opts: {
     date: opts.date,
     location_osm_id: opts.osmId,
     location_osm_type: opts.osmType,
-    price_per: opts.perKg ? "KILOGRAM" : "UNIT",
   };
-  const code = opts.barcode?.replace(/\D/g, "") ?? "";
-  if (code.length >= 8) body.product_code = code;
-  if (opts.name) body.product_name = opts.name;
+  if (code.length >= 8) {
+    body.product_code = code;
+    if (opts.name) body.product_name = opts.name;
+  } else if (tag) {
+    body.category_tag = tag;
+    body.price_per = opts.perKg ? "KILOGRAM" : "UNIT";
+    if (opts.name) body.product_name = opts.name;
+  } else {
+    throw new Error(
+      `${opts.name ?? "Item"} needs a barcode, or a produce name Open Prices knows (tomatoes, bananas, …)`,
+    );
+  }
   const res = await fetch(`${PRICES}/api/v1/prices`, {
     method: "POST",
     headers: headers({
@@ -329,6 +340,61 @@ export async function createPrice(opts: {
   }
   return Number(json.id);
 }
+
+/** Loose produce must use an Open Food Facts category tag, not a barcode. Longest match first. */
+export function categoryTagFromName(name: string | null | undefined): string | null {
+  const s = (name ?? "").toLowerCase();
+  if (!s.trim()) return null;
+  for (const [re, tag] of PRODUCE_TAGS) {
+    if (re.test(s)) return tag;
+  }
+  return null;
+}
+
+const PRODUCE_TAGS: [RegExp, string][] = [
+  [/cherry\s*tom/i, "en:cherry-tomatoes"],
+  [/baby\s*potato|chat\s*potato|new\s*potato/i, "en:new-potatoes"],
+  [/gala\s*apple/i, "en:gala-apples"],
+  [/granny\s*smith/i, "en:granny-smith-apples"],
+  [/bell\s*pepper|capsicum|sweet\s*pepper/i, "en:bell-peppers"],
+  [/\btomato/i, "en:tomatoes"],
+  [/\bbanana/i, "en:bananas"],
+  [/\bcarrot/i, "en:carrots"],
+  [/\bonion/i, "en:onions"],
+  [/\bpotato/i, "en:potatoes"],
+  [/\bapple/i, "en:apples"],
+  [/\bcucumber/i, "en:cucumbers"],
+  [/\blettuce/i, "en:lettuces"],
+  [/\bgrape/i, "en:grapes"],
+  [/\borange/i, "en:oranges"],
+  [/\blemon/i, "en:lemons"],
+  [/\blime/i, "en:limes"],
+  [/\bgarlic/i, "en:garlic"],
+  [/\bginger/i, "en:ginger"],
+  [/\bmango/i, "en:mangoes"],
+  [/\bavocado/i, "en:avocados"],
+  [/\bbroccoli/i, "en:broccoli"],
+  [/\bspinach/i, "en:spinachs"],
+  [/\bcabbage/i, "en:cabbages"],
+  [/eggplant|aubergine/i, "en:aubergines"],
+  [/zucchini|courgette/i, "en:courgettes"],
+  [/watermelon/i, "en:watermelons"],
+  [/\bmelon/i, "en:melons"],
+  [/strawberr/i, "en:strawberries"],
+  [/blueberr/i, "en:blueberries"],
+  [/\bpear/i, "en:pears"],
+  [/\bpeach/i, "en:peaches"],
+  [/pineapple/i, "en:pineapples"],
+  [/\bkiwi/i, "en:kiwis"],
+  [/\bdate/i, "en:dates"],
+  [/coriander|cilantro/i, "en:coriander-products"],
+  [/\bparsley/i, "en:parsley"],
+  [/\bmint/i, "en:mints"],
+  [/\bbasil/i, "en:basil"],
+  [/\bokra|bhindi/i, "en:okra"],
+  [/\bbeet/i, "en:beetroot"],
+  [/\bcoconut/i, "en:coconuts"],
+];
 
 export async function uploadProductPhoto(barcode: string, imageDataUrl: string): Promise<void> {
   const s = await settings();

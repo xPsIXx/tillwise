@@ -2906,7 +2906,7 @@ export const shareTripOpenFood = createServerFn({ method: "POST" })
     async ({
       data,
     }): Promise<{ photos: number; prices: number; skipped: number; already: number; errors: string[] }> => {
-      const { loadOffConfig, uploadProof, createPrice } = await import("./openfood");
+      const { loadOffConfig, uploadProof, createPrice, categoryTagFromName } = await import("./openfood");
       const cfg = await loadOffConfig();
       if (!cfg.username || !cfg.hasPassword) {
         throw new Error("Add Open Food Facts username and password in Settings");
@@ -2945,21 +2945,38 @@ export const shareTripOpenFood = createServerFn({ method: "POST" })
         unit_price: unknown;
         line_price: unknown;
         weight_value: unknown;
+        weight_unit: string | null;
       }>`
-        select name, barcode, unit_price, line_price, weight_value
+        select name, barcode, unit_price, line_price, weight_value, weight_unit
           from trip_items where trip_id = ${tripId}
       `;
       const errors: string[] = [];
       let photos = 0;
       let prices = 0;
-      const priced = items
-        .map((item) => ({
-          name: item.name,
-          barcode: item.barcode?.replace(/\D/g, "") || null,
-          price: n(item.line_price) ?? n(item.unit_price),
-          perKg: Boolean(n(item.unit_price) && n(item.weight_value)),
-        }))
-        .filter((item) => item.price);
+      const priced = items.flatMap((item) => {
+        const barcode = item.barcode?.replace(/\D/g, "") || null;
+        const unit = n(item.unit_price);
+        const line = n(item.line_price);
+        const weight = n(item.weight_value);
+        const unitKg = !item.weight_unit || /^(kg|g)$/i.test(item.weight_unit);
+        const tag = barcode && barcode.length >= 8 ? null : categoryTagFromName(item.name);
+        const perKg = Boolean(!barcode && tag && unit && weight && unitKg);
+        const price = perKg ? unit : (line ?? unit);
+        if (price == null) return [];
+        if (!barcode && !tag) {
+          errors.push(`${item.name}: needs a barcode or a known produce name`);
+          return [];
+        }
+        return [
+          {
+            name: item.name,
+            barcode,
+            categoryTag: tag,
+            price,
+            perKg,
+          },
+        ];
+      });
       const receiptTotal = priced.reduce((sum, item) => sum + (item.price ?? 0), 0);
       let firstProof: number | null = null;
       const sentIds: number[] = [];
@@ -2992,6 +3009,7 @@ export const shareTripOpenFood = createServerFn({ method: "POST" })
             proofId: firstProof,
             barcode: item.barcode,
             name: item.name,
+            categoryTag: item.categoryTag,
             price: item.price as number,
             currency,
             date,
@@ -3057,7 +3075,7 @@ export const logShelfPrice = createServerFn({ method: "POST" })
       return { saved: true, sent: false, error: "Need the photo to send to Open Prices" };
     }
     try {
-      const { loadOffConfig, uploadProof, createPrice } = await import("./openfood");
+      const { loadOffConfig, uploadProof, createPrice, categoryTagFromName } = await import("./openfood");
       const cfg = await loadOffConfig();
       if (!cfg.username || !cfg.hasPassword) {
         return { saved: true, sent: false, error: "Add Open Food Facts login in Settings" };
@@ -3065,8 +3083,19 @@ export const logShelfPrice = createServerFn({ method: "POST" })
       if (!cfg.osmId || !cfg.osmType) {
         return { saved: true, sent: false, error: "Pick the shop on OpenStreetMap in Settings" };
       }
-      const price = data.linePrice ?? data.unitPrice;
+      const code = data.barcode?.replace(/\D/g, "") || null;
+      const tag = code && code.length >= 8 ? null : categoryTagFromName(data.name);
+      const unitKg = !data.weightUnit || /^(kg|g)$/i.test(data.weightUnit);
+      const perKg = Boolean(!code && tag && data.unitPrice && data.weightValue && unitKg);
+      const price = perKg ? data.unitPrice : (data.linePrice ?? data.unitPrice);
       if (price == null) return { saved: true, sent: false, error: "Need a price" };
+      if (!code && !tag) {
+        return {
+          saved: true,
+          sent: false,
+          error: "Need a barcode, or a produce name Open Prices knows, to send",
+        };
+      }
       const date = new Date().toISOString().slice(0, 10);
       const currency = (data.currency || "AED").toUpperCase();
       const proofId = await uploadProof({
@@ -3080,14 +3109,15 @@ export const logShelfPrice = createServerFn({ method: "POST" })
       });
       await createPrice({
         proofId,
-        barcode: data.barcode?.replace(/\D/g, "") || null,
+        barcode: code,
         name: data.name.trim(),
+        categoryTag: tag,
         price,
         currency,
         date,
         osmId: cfg.osmId,
         osmType: cfg.osmType,
-        perKg: Boolean(data.unitPrice && data.weightValue),
+        perKg,
       });
       return { saved: true, sent: true };
     } catch (err) {
