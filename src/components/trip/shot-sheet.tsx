@@ -86,12 +86,19 @@ export function ShotSheet({
     try {
       const src = await originalImage();
       if (shot.kind === "label") {
-        const data = await readLabelCapture(src, shot.barcode, read, { skipMemory: true });
+        const data = await readLabelCapture(src, shot.barcode, read, {
+          skipMemory: true,
+          storeName: shot.storeName,
+        });
         await applyLabel(data);
         setExtract(data);
         toast.success(`Read ${data.name}`);
       } else {
-        const data = await readReceiptCapture(src, read === "byok" || read === "grok" ? "byok" : "local");
+        const data = await readReceiptCapture(
+          src,
+          read === "byok" || read === "grok" ? "byok" : "local",
+          shot.storeName,
+        );
         await applyReceipt(data);
         setExtract(data);
         toast.success("Receipt re-read");

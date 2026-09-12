@@ -1,7 +1,8 @@
 import { toast } from "sonner";
 import { extractionConfidence } from "./parse-local";
+import { tripDay, money, unitMoney } from "./format";
 import { readLabelCapture, readReceiptCapture } from "./read-capture";
-import { getShotImage, updateItem, updateReceiptCapture, updateScanShot } from "./server";
+import { getShotImage, lastPaid, updateItem, updateReceiptCapture, updateScanShot } from "./server";
 import { loadScanSettings } from "./settings";
 import type { LabelExtraction, ReceiptExtraction, ScanMode, ScanShot } from "./types";
 
@@ -11,6 +12,8 @@ export type ScanJob = {
   image: string;
   barcode: string | null;
   status: "queued" | "reading" | "done" | "error";
+  tripId?: number;
+  storeName?: string | null;
   itemId?: number;
   captureId?: number;
   shotId?: number;
@@ -103,7 +106,18 @@ function emptyReceipt(): ReceiptExtraction {
   };
 }
 
+export function shotFailed(shot: ScanShot): boolean {
+  if (!shot.lastRead) return false;
+  if (shot.kind === "label") {
+    const name = "name" in shot.lastRead ? shot.lastRead.name : "";
+    return name === "Couldn't read";
+  }
+  const rec = shot.lastRead as ReceiptExtraction;
+  return Boolean(rec.rawText) && (rec.items?.length ?? 0) === 0 && rec.total == null;
+}
+
 export function shotNeedsRead(shot: ScanShot): boolean {
+  if (shotFailed(shot)) return false;
   if (!shot.lastRead) return true;
   if (shot.kind === "label") {
     const name = "name" in shot.lastRead ? shot.lastRead.name : "";
@@ -134,7 +148,9 @@ async function runJob(job: ScanJob) {
   publish();
   try {
     if (job.mode === "label") {
-      const data = await readLabelCapture(job.image, job.barcode);
+      const data = await readLabelCapture(job.image, job.barcode, undefined, {
+        storeName: job.storeName,
+      });
       if (job.itemId) {
         await updateItem({
           data: {
@@ -169,13 +185,29 @@ async function runJob(job: ScanJob) {
         }
         job.confidence = extractionConfidence(data);
         toast.success(`Added ${data.name}`);
+        try {
+          const paid = await lastPaid({
+            data: { barcode: data.barcode, name: data.name, excludeTripId: job.tripId ?? null },
+          });
+          if (paid && (paid.unitPrice != null || paid.linePrice != null)) {
+            const price =
+              paid.unitPrice != null
+                ? unitMoney(paid.unitPrice, paid.currency, paid.weightUnit)
+                : money(paid.linePrice, paid.currency);
+            toast.message(
+              `Last at ${paid.storeName || "a store"}: ${price} (${tripDay(paid.observedAt)})`,
+            );
+          }
+        } catch {
+          /* catalog is optional */
+        }
         notifySaved();
       } else if (confirmHandler) {
         job.confidence = extractionConfidence(data);
         confirmHandler(job, data);
       }
     } else {
-      const data = await readReceiptCapture(job.image);
+      const data = await readReceiptCapture(job.image, undefined, job.storeName);
       if (job.captureId) {
         await updateReceiptCapture({
           data: { captureId: job.captureId, extracted: data },
@@ -244,16 +276,25 @@ export async function drainScanQueue() {
   }
 }
 
-export async function resumeUnreadShots(shots: ScanShot[]): Promise<number> {
-  const unread = shots.filter(shotNeedsRead);
+export async function resumeShots(shots: ScanShot[]): Promise<number> {
   let n = 0;
-  for (const shot of unread) {
+  for (const shot of shots) {
     try {
+      if (shot.itemId) {
+        await updateItem({
+          data: {
+            itemId: shot.itemId,
+            patch: { name: "Reading label…", matchStatus: "processing" },
+          },
+        }).catch(() => undefined);
+      }
       const { image } = await getShotImage({ data: shot.id });
       enqueueScanJob({
         mode: shot.kind,
         image,
         barcode: shot.barcode,
+        tripId: shot.tripId,
+        storeName: shot.storeName,
         itemId: shot.itemId ?? undefined,
         captureId: shot.captureId ?? undefined,
         shotId: shot.id,
@@ -264,4 +305,8 @@ export async function resumeUnreadShots(shots: ScanShot[]): Promise<number> {
     }
   }
   return n;
+}
+
+export async function resumeUnreadShots(shots: ScanShot[]): Promise<number> {
+  return resumeShots(shots.filter(shotNeedsRead));
 }

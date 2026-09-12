@@ -223,12 +223,14 @@ export function CameraView({
   onMode,
   onClose,
   onSaved,
+  storeName,
 }: {
   tripId: number;
   mode: ScanMode;
   onMode: (mode: ScanMode) => void;
   onClose: () => void;
   onSaved: () => void;
+  storeName?: string | null;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const viewCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -419,6 +421,8 @@ export function CameraView({
       image: dataUrl,
       barcode,
       status: "queued",
+      tripId,
+      storeName: storeName ?? null,
     };
     if (!holdForLook(cfg)) {
       if (scanMode === "label") {

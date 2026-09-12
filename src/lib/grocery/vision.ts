@@ -1,5 +1,7 @@
 import { resolveEndpoint } from "./llm";
 import { parseLabelText, pickProductName, nameLooksWeak } from "./parse-local";
+import { loadPromptPack } from "./prompt-store";
+import { withShopNote } from "./prompts";
 import type {
   CollatedItem,
   CollatePair,
@@ -255,7 +257,13 @@ Ignore ads, loyalty points, and payment-card numbers. Prices are numbers.`;
 
 export async function readLabelImage(
   imageDataUrl: string,
-  opts?: { detail?: "low" | "high"; barcodeHint?: string | null; provider?: LlmProvider },
+  opts?: {
+    detail?: "low" | "high";
+    barcodeHint?: string | null;
+    provider?: LlmProvider;
+    storeName?: string | null;
+    promptOverride?: string;
+  },
 ): Promise<{ ok: true; data: LabelExtraction } | { ok: false; error: string }> {
   const batch = await readLabelImages(
     [{ imageDataUrl, barcodeHint: opts?.barcodeHint }],
@@ -266,7 +274,7 @@ export async function readLabelImage(
 
 export async function readLabelImages(
   photos: { imageDataUrl: string; barcodeHint?: string | null }[],
-  opts?: { detail?: "low" | "high"; provider?: LlmProvider },
+  opts?: { detail?: "low" | "high"; provider?: LlmProvider; storeName?: string | null; promptOverride?: string },
 ): Promise<Array<{ ok: true; data: LabelExtraction } | { ok: false; error: string }>> {
   if (photos.length === 0) return [];
   const hints = photos
@@ -278,6 +286,10 @@ export async function readLabelImages(
     .filter(Boolean)
     .join("\n");
   const n = photos.length;
+  const pack = await loadPromptPack();
+  const rules = opts?.promptOverride?.trim()
+    ? opts.promptOverride.trim()
+    : withShopNote(pack.label, pack, opts?.storeName);
   const result = await chat({
     maxTokens: Math.min(4000, 700 * n + 400),
     images: photos.map((p) => p.imageDataUrl),
@@ -286,7 +298,7 @@ export async function readLabelImages(
     task: "vision",
     timeoutMs: n > 1 ? 180_000 : undefined,
     prompt: `You are given ${n} grocery label photo${n === 1 ? "" : "s"} (produce scale sticker, packaged-goods label, shelf tag, or barcode), in order as Image 1${n > 1 ? ` through Image ${n}` : ""}.
-${LABEL_RULES}
+${rules}
 ${hints}
 Return JSON: { "items": [ { "index": 1, ...fields }, ... ] }
 items.length MUST equal ${n}. index is 1-based and matches the image number. One object per photo, even if a photo is unreadable (then name "Couldn't read" and nulls).`,
@@ -309,7 +321,7 @@ items.length MUST equal ${n}. index is 1-based and matches the image number. One
 
 export async function readReceiptImage(
   imageDataUrl: string,
-  opts?: { detail?: "low" | "high"; provider?: LlmProvider },
+  opts?: { detail?: "low" | "high"; provider?: LlmProvider; storeName?: string | null; promptOverride?: string },
 ): Promise<{ ok: true; data: ReceiptExtraction } | { ok: false; error: string }> {
   const batch = await readReceiptImages([imageDataUrl], opts);
   return batch[0] ?? { ok: false, error: "Could not parse the receipt." };
@@ -317,10 +329,14 @@ export async function readReceiptImage(
 
 export async function readReceiptImages(
   imageDataUrls: string[],
-  opts?: { detail?: "low" | "high"; provider?: LlmProvider },
+  opts?: { detail?: "low" | "high"; provider?: LlmProvider; storeName?: string | null; promptOverride?: string },
 ): Promise<Array<{ ok: true; data: ReceiptExtraction } | { ok: false; error: string }>> {
   if (imageDataUrls.length === 0) return [];
   const n = imageDataUrls.length;
+  const pack = await loadPromptPack();
+  const rules = opts?.promptOverride?.trim()
+    ? opts.promptOverride.trim()
+    : withShopNote(pack.receipt, pack, opts?.storeName);
   const result = await chat({
     maxTokens: Math.min(5000, 1100 * n + 400),
     images: imageDataUrls,
@@ -329,7 +345,7 @@ export async function readReceiptImages(
     task: "vision",
     timeoutMs: n > 1 ? 180_000 : undefined,
     prompt: `You are given ${n} grocery receipt / till slip photo${n === 1 ? "" : "s"}, in order as Image 1${n > 1 ? ` through Image ${n}` : ""}. Each photo may be only a portion of a long tape.
-${RECEIPT_RULES}
+${rules}
 Return JSON: { "receipts": [ { "index": 1, ...fields }, ... ] }
 receipts.length MUST equal ${n}. index is 1-based and matches the image number. One object per photo.`,
   });
@@ -362,13 +378,13 @@ export async function stitchReceipts(
     return { ok: true, data: portions[0] };
   }
 
+  const pack = await loadPromptPack();
+  const rules = withShopNote(pack.stitch, pack, portions.find((p) => p.storeName)?.storeName);
   const result = await chat({
     maxTokens: 1800,
     provider: provider ?? "local",
     task: "text",
-    prompt: `Merge these OCR results from overlapping portions of ONE grocery receipt.
-Deduplicate lines that appear in more than one portion. Repair names cut off at the edges. Keep a single subtotal/tax/total (from the portion that has them).
-Return JSON with the same shape: store_name, store_location, datetime, is_partial (false if complete), portion_hint ("full"), items, subtotal, tax, total, currency, raw_text.
+    prompt: `${rules}
 
 PORTIONS:
 ${JSON.stringify(portions, null, 2)}`,
@@ -582,15 +598,13 @@ export async function proposeCollation(
 ): Promise<CollatePreview> {
   const local = localAssign(labels, receipt);
   const useProvider = provider ?? "local";
+  const pack = await loadPromptPack();
+  const rules = withShopNote(pack.collate, pack, receipt?.storeName);
   const result = await chat({
     maxTokens: 1200,
     provider: useProvider,
     task: "text",
-    prompt: `Match aisle label photos to till-slip lines. One label to at most one till line. Do not invent products.
-
-Return JSON only: { "matches": [ { "label_id": number, "receipt_index": number } ] }
-receipt_index is 0-based into RECEIPT.items. Omit a label (or use receipt_index -1) if it is not on the till.
-Each receipt_index at most once. Prefer matching abbreviations (TOM VINE → Tomatoes on the Vine).
+    prompt: `${rules}
 
 LABELS:
 ${JSON.stringify(labels.map((l) => ({ id: l.id, name: l.name, brand: l.brand, weight: l.weightValue, unit: l.weightUnit })))}
@@ -665,15 +679,12 @@ export async function mapCommonNames(
 ): Promise<{ ok: true; mappings: { printed: string; common: string }[] } | { ok: false; error: string }> {
   const unique = [...new Set(printed.map((n) => n.trim()).filter(Boolean))];
   if (unique.length === 0) return { ok: true, mappings: [] };
+  const pack = await loadPromptPack();
   const result = await chat({
     maxTokens: 1800,
-    provider: provider ?? "local",
+    provider: provider ?? "byok",
     task: "text",
-    prompt: `Map grocery names as printed on stickers or till tape to a short common name for statistics only.
-Keep origin/variety on the printed side; common is the generic produce or product (Carrots, Onion, Tomatoes, Milk).
-Examples: "Australian Carrots" → Carrots; "Indian Onion" → Onion; "TOM VINE" → Tomatoes.
-Do not invent items missing from the list.
-Return JSON: { "mappings": [ { "printed": "...", "common": "..." } ] }
+    prompt: `${pack.common}
 
 NAMES:
 ${JSON.stringify(unique)}`,

@@ -8,19 +8,21 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CollateSheet } from "@/components/trip/collate-sheet";
 import { ItemCard } from "@/components/trip/item-card";
-import { ProductMatchSheet } from "@/components/trip/product-match";
 import { ShotGallery } from "@/components/trip/shot-gallery";
 import { ShotSheet } from "@/components/trip/shot-sheet";
 import {
   applyCollate,
+  addManualItem,
   completeTrip,
   deleteItem,
   deleteReceiptCapture,
   deleteTrip,
+  generateCommonNames,
   getLlmConfig,
   getShotImage,
   getTrip,
   logAppEvent,
+  mergeDuplicateItems,
   pairItems,
   previewCollate,
   reopenTrip,
@@ -33,7 +35,8 @@ import {
 import { money, statusLabel, tripDate } from "@/lib/grocery/format";
 import { extractionConfidence } from "@/lib/grocery/parse-local";
 import { readLabelCapture, readLabelCaptureBatch, readReceiptCapture, readReceiptCaptureBatch } from "@/lib/grocery/read-capture";
-import { listScanJobs, onScanQueueSaved, resumeUnreadShots, shotNeedsRead, subscribeScanQueue } from "@/lib/grocery/scan-queue";
+import { listScanJobs, onScanQueueSaved, resumeShots, resumeUnreadShots, shotFailed, shotNeedsRead, subscribeScanQueue } from "@/lib/grocery/scan-queue";
+import { nameKey } from "@/lib/grocery/catalog";
 import { loadScanSettings } from "@/lib/grocery/settings";
 import type { CollatePreview, LabelExtraction, ReceiptExtraction, ScanShot, TripItem } from "@/lib/grocery/types";
 
@@ -130,6 +133,7 @@ async function runByokLabelBatch(shots: ScanShot[]): Promise<ReprocessResult> {
   }
   const { results, calls } = await readLabelCaptureBatch(
     loaded.map((row) => ({ image: row.image, barcode: row.shot.barcode })),
+    loaded[0]?.shot.storeName,
   );
   let ok = 0;
   let fail = 0;
@@ -146,6 +150,7 @@ async function runByokLabelBatch(shots: ScanShot[]): Promise<ReprocessResult> {
       extraCalls += 1;
       const extracted = await readLabelCapture(loaded[i].image, shot.barcode, "byok", {
         skipMemory: true,
+        storeName: shot.storeName,
       });
       await applyLabelShot(shot, extracted);
       ok += 1;
@@ -164,7 +169,10 @@ async function runByokReceiptBatch(shots: ScanShot[]): Promise<ReprocessResult> 
     const { image } = await getShotImage({ data: shot.id });
     loaded.push({ shot, image });
   }
-  const { results, calls } = await readReceiptCaptureBatch(loaded.map((row) => row.image));
+  const { results, calls } = await readReceiptCaptureBatch(
+    loaded.map((row) => row.image),
+    loaded[0]?.shot.storeName,
+  );
   let ok = 0;
   let fail = 0;
   let extraCalls = 0;
@@ -178,7 +186,7 @@ async function runByokReceiptBatch(shots: ScanShot[]): Promise<ReprocessResult> 
         continue;
       }
       extraCalls += 1;
-      const extracted = await readReceiptCapture(loaded[i].image, "byok");
+      const extracted = await readReceiptCapture(loaded[i].image, "byok", shot.storeName);
       await applyReceiptShot(shot, extracted);
       ok += 1;
     } catch (err) {
@@ -206,10 +214,13 @@ async function runShotQueue(
       try {
         const { image } = await getShotImage({ data: shot.id });
         if (shot.kind === "receipt") {
-          const extracted = await readReceiptCapture(image, "byok");
+          const extracted = await readReceiptCapture(image, "byok", shot.storeName);
           await applyReceiptShot(shot, extracted);
         } else {
-          const extracted = await readLabelCapture(image, shot.barcode, engine, { skipMemory: true });
+          const extracted = await readLabelCapture(image, shot.barcode, engine, {
+            skipMemory: true,
+            storeName: shot.storeName,
+          });
           await applyLabelShot(shot, extracted);
         }
         ok += 1;
@@ -273,7 +284,6 @@ function TripPage() {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<TripItem | null>(null);
   const [store, setStore] = useState<string | null>(null);
-  const [matching, setMatching] = useState<TripItem | null>(null);
   const [openShot, setOpenShot] = useState<ScanShot | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [byokPhase, setByokPhase] = useState<"labels" | "receipts" | null>(null);
@@ -281,6 +291,11 @@ function TripPage() {
   const [confirmFile, setConfirmFile] = useState(false);
   const [showReread, setShowReread] = useState(false);
   const [pairing, setPairing] = useState<TripItem | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [more, setMore] = useState(false);
+  const [draftName, setDraftName] = useState("");
+  const [draftPrice, setDraftPrice] = useState("");
+  const [draftWeight, setDraftWeight] = useState("");
   const [queueTick, setQueueTick] = useState(0);
 
   const detailQuery = useQuery({
@@ -331,6 +346,15 @@ function TripPage() {
       setConfirmFile(false);
       toast.success("Trip filed");
       invalidate();
+      void generateCommonNames({
+        data: { provider: loadScanSettings().collate, tripId },
+      })
+        .then((res) => {
+          if (res.mapped) toast.message(`Stats names updated (${res.mapped})`);
+          void qc.invalidateQueries({ queryKey: ["analytics"] });
+          void qc.invalidateQueries({ queryKey: ["produce-prices"] });
+        })
+        .catch(() => undefined);
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not file trip"),
   });
@@ -358,6 +382,53 @@ function TripPage() {
       invalidate();
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not resume"),
+  });
+
+  const retryFailed = useMutation({
+    mutationFn: (shots: ScanShot[]) => resumeShots(shots),
+    onSuccess: (n) => {
+      toast.success(n ? `Retrying ${n} photo${n === 1 ? "" : "s"}…` : "Nothing to retry");
+      invalidate();
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not retry"),
+  });
+
+  const addLine = useMutation({
+    mutationFn: () => {
+      const price = draftPrice.trim() === "" ? null : Number(draftPrice);
+      const weight = draftWeight.trim() === "" ? null : Number(draftWeight);
+      if (price != null && Number.isNaN(price)) throw new Error("Line price must be a number");
+      if (weight != null && Number.isNaN(weight)) throw new Error("Weight must be a number");
+      return addManualItem({
+        data: {
+          tripId,
+          name: draftName,
+          linePrice: price,
+          weightValue: weight,
+          weightUnit: weight == null ? null : "kg",
+        },
+      });
+    },
+    onSuccess: (item) => {
+      toast.success(`Added ${item.name}`);
+      setAdding(false);
+      setDraftName("");
+      setDraftPrice("");
+      setDraftWeight("");
+      invalidate();
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not add line"),
+  });
+
+  const mergeDupes = useMutation({
+    mutationFn: () => mergeDuplicateItems({ data: tripId }),
+    onSuccess: (res) => {
+      toast.success(
+        res.merged ? `Merged ${res.merged} duplicate${res.merged === 1 ? "" : "s"}` : "No duplicates",
+      );
+      invalidate();
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not merge"),
   });
 
   const reopen = useMutation({
@@ -503,8 +574,19 @@ function TripPage() {
   const tillOnly = visible.filter((i) => i.matchStatus === "receipt_only");
   const leftover = labelOnly.length + tillOnly.length;
   const unreadShots = photos.filter(shotNeedsRead);
+  const failedShots = photos.filter(shotFailed);
   const liveJobs = listScanJobs().filter((j) => j.status === "queued" || j.status === "reading");
   void queueTick;
+  const dupeExtra = (() => {
+    const map = new Map<string, number>();
+    for (const it of visible) {
+      if (it.matchStatus !== "unmatched" && it.matchStatus !== "label_only") continue;
+      const k = nameKey(it.name);
+      if (!k || k === "reading label" || k === "couldn t read") continue;
+      map.set(k, (map.get(k) ?? 0) + 1);
+    }
+    return [...map.values()].reduce((a, n) => a + Math.max(0, n - 1), 0);
+  })();
   const lineSum = visible.reduce((acc, it) => acc + (it.linePrice ?? 0), 0);
   const printed = trip.receiptTotal;
   const gap =
@@ -537,9 +619,9 @@ function TripPage() {
           {money(trip.receiptTotal ?? lineSum, trip.currency)}
         </p>
       </div>
-      <p className="mt-1 text-sm text-muted">
-        {[trip.storeLocation, tripDate(trip.startedAt)].filter(Boolean).join(" · ")}
-      </p>
+      {trip.storeLocation ? (
+        <p className="mt-1 text-sm text-muted">{trip.storeLocation}</p>
+      ) : null}
       {trip.notes && <p className="mt-2 text-sm text-muted">{trip.notes}</p>}
 
       <dl className="mt-5 grid grid-cols-3 gap-2">
@@ -575,6 +657,38 @@ function TripPage() {
           keep using the app.
         </p>
       ) : null}
+      {failedShots.length > 0 && liveJobs.length === 0 ? (
+        <div className="mt-4 rounded-xl bg-surface px-3 py-3 text-sm shadow-[var(--shadow-border)]">
+          <p className="font-medium">
+            {failedShots.length} photo{failedShots.length === 1 ? "" : "s"} couldn’t be read
+          </p>
+          <ul className="mt-2 space-y-1 text-muted">
+            {failedShots.slice(0, 8).map((s) => (
+              <li key={s.id} className="flex items-center justify-between gap-2">
+                <span className="truncate">
+                  {s.kind === "receipt" ? "Till slip" : "Label"} · {tripDate(s.createdAt)}
+                </span>
+                <button
+                  type="button"
+                  className="shrink-0 text-accent underline-offset-2 hover:underline"
+                  onClick={() => retryFailed.mutate([s])}
+                >
+                  Retry
+                </button>
+              </li>
+            ))}
+          </ul>
+          <Button
+            type="button"
+            className="mt-3"
+            variant="secondary"
+            disabled={retryFailed.isPending}
+            onClick={() => retryFailed.mutate(failedShots)}
+          >
+            {retryFailed.isPending ? "Starting…" : "Retry all"}
+          </Button>
+        </div>
+      ) : null}
       {leftover > 0 ? (
         <p className="mt-3 text-sm">
           <a href="#unmatched" className="text-accent underline-offset-2 hover:underline">
@@ -585,7 +699,7 @@ function TripPage() {
         </p>
       ) : null}
 
-      <div className="mt-6 flex flex-wrap gap-2">
+      <div className="mt-6 grid grid-cols-2 gap-2">
         <Button asChild>
           <Link to="/scan" search={{ tripId: trip.id, mode: "label" }}>
             Scan labels
@@ -596,43 +710,48 @@ function TripPage() {
             Scan receipt
           </Link>
         </Button>
-        {receipts.length > 0 && (
-          <Button
-            variant="accent"
-            disabled={collate.isPending || apply.isPending || !canCollate}
-            onClick={() => collate.mutate()}
-          >
-            {collate.isPending ? "Matching…" : "Collate trip"}
-          </Button>
-        )}
+        <Button
+          variant="accent"
+          disabled={collate.isPending || apply.isPending || !canCollate || receipts.length === 0}
+          onClick={() => collate.mutate()}
+        >
+          {collate.isPending ? "Matching…" : "Collate"}
+        </Button>
         {trip.status === "complete" ? (
           <Button variant="primary" onClick={() => reopen.mutate()} disabled={reopen.isPending}>
-            {reopen.isPending ? "Reopening…" : "Reopen trip"}
+            {reopen.isPending ? "Reopening…" : "Reopen"}
           </Button>
         ) : (
-          canFile && (
-            <Button
-              variant="primary"
-              onClick={() => {
-                if (leftover > 0 && !confirmFile) {
-                  setConfirmFile(true);
-                  window.setTimeout(() => setConfirmFile(false), 4000);
-                  return;
-                }
-                finish.mutate();
-              }}
-              disabled={finish.isPending}
-            >
-              {finish.isPending
-                ? "Filing…"
-                : confirmFile
-                  ? `File with ${leftover} unmatched?`
-                  : "File trip"}
-            </Button>
-          )
+          <Button
+            variant="primary"
+            onClick={() => {
+              if (leftover > 0 && !confirmFile) {
+                setConfirmFile(true);
+                window.setTimeout(() => setConfirmFile(false), 4000);
+                return;
+              }
+              finish.mutate();
+            }}
+            disabled={finish.isPending || !canFile}
+          >
+            {finish.isPending
+              ? "Filing…"
+              : confirmFile
+                ? `File unmatched?`
+                : "File trip"}
+          </Button>
         )}
       </div>
-      <div className="mt-3 flex flex-wrap gap-2">
+      <div className="mt-3">
+        <Button type="button" variant="ghost" className="text-muted" onClick={() => setMore((v) => !v)}>
+          {more ? "Less" : "More"}
+        </Button>
+      </div>
+      {more ? (
+      <div className="mt-2 flex flex-wrap gap-2">
+        <Button type="button" variant="secondary" onClick={() => setAdding(true)}>
+          Add line
+        </Button>
         {photos.length > 0 && (
           <Button type="button" variant="ghost" className="text-muted" onClick={() => setShowReread((v) => !v)}>
             {showReread ? "Hide re-read" : "Re-read photos"}
@@ -728,6 +847,7 @@ function TripPage() {
           </Button>
         )}
       </div>
+      ) : null}
 
       {photos.length > 0 && (
         <section className="mt-8">
@@ -796,6 +916,19 @@ function TripPage() {
         <h2 className="font-display text-2xl">
           {merged.length ? "Collated items" : "Cart"}
         </h2>
+        {dupeExtra > 0 ? (
+          <Button
+            type="button"
+            variant="ghost"
+            className="mt-2 text-muted"
+            disabled={mergeDupes.isPending}
+            onClick={() => mergeDupes.mutate()}
+          >
+            {mergeDupes.isPending
+              ? "Merging…"
+              : `Merge ${dupeExtra} duplicate${dupeExtra === 1 ? "" : "s"}`}
+          </Button>
+        ) : null}
         {visible.length === 0 ? (
           <p className="mt-3 text-sm text-muted">
             Nothing scanned yet. Open the camera and frame a produce sticker — or try a sample.
@@ -810,7 +943,6 @@ function TripPage() {
                       item={item}
                       tripCurrency={trip.currency}
                       photos={photos}
-                      onMatch={setMatching}
                       onEdit={setEditing}
                       onDelete={(it) => removeItem.mutate(it.id)}
                       onOpenShot={setOpenShot}
@@ -834,7 +966,6 @@ function TripPage() {
                             item={item}
                             tripCurrency={trip.currency}
                             photos={photos}
-                            onMatch={setMatching}
                             onEdit={setEditing}
                             onDelete={(it) => removeItem.mutate(it.id)}
                             onOpenShot={setOpenShot}
@@ -855,7 +986,6 @@ function TripPage() {
                             item={item}
                             tripCurrency={trip.currency}
                             photos={photos}
-                            onMatch={setMatching}
                             onEdit={setEditing}
                             onDelete={(it) => removeItem.mutate(it.id)}
                             onOpenShot={setOpenShot}
@@ -876,7 +1006,6 @@ function TripPage() {
                       item={item}
                       tripCurrency={trip.currency}
                       photos={photos}
-                      onMatch={setMatching}
                       onEdit={setEditing}
                       onDelete={(it) => removeItem.mutate(it.id)}
                       onOpenShot={setOpenShot}
@@ -989,16 +1118,62 @@ function TripPage() {
           </form>
         </div>
       )}
-      {matching && (
-        <ProductMatchSheet
-          item={matching}
-          onClose={() => setMatching(null)}
-          onSaved={() => {
-            invalidate();
-            void qc.invalidateQueries({ queryKey: ["analytics"] });
-            void qc.invalidateQueries({ queryKey: ["canonical-products"] });
-          }}
-        />
+      )}
+      {adding && (
+        <div
+          className="fixed inset-0 z-40 grid place-items-end bg-bg/50 p-4 sm:place-items-center"
+          onClick={() => setAdding(false)}
+        >
+          <form
+            className="w-full max-w-md rounded-2xl bg-surface p-5 shadow-[var(--shadow-border)]"
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={(e) => {
+              e.preventDefault();
+              addLine.mutate();
+            }}
+          >
+            <h3 className="font-display text-2xl">Add a line</h3>
+            <p className="mt-1 text-sm text-muted">No photo. Pair it to a till line after collate if you want.</p>
+            <label className="mt-4 block text-xs text-muted">
+              Name
+              <Input
+                className="mt-1"
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                required
+                autoFocus
+              />
+            </label>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <label className="text-xs text-muted">
+                Weight (kg)
+                <Input
+                  className="mt-1"
+                  inputMode="decimal"
+                  value={draftWeight}
+                  onChange={(e) => setDraftWeight(e.target.value)}
+                />
+              </label>
+              <label className="text-xs text-muted">
+                Line price
+                <Input
+                  className="mt-1"
+                  inputMode="decimal"
+                  value={draftPrice}
+                  onChange={(e) => setDraftPrice(e.target.value)}
+                />
+              </label>
+            </div>
+            <div className="mt-5 flex gap-2">
+              <Button type="button" variant="secondary" className="flex-1" onClick={() => setAdding(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" className="flex-1" disabled={addLine.isPending || !draftName.trim()}>
+                {addLine.isPending ? "Adding…" : "Add"}
+              </Button>
+            </div>
+          </form>
+        </div>
       )}
       {pairing && (
         <div
@@ -1061,7 +1236,6 @@ function LineCard({
   item,
   tripCurrency,
   photos,
-  onMatch,
   onEdit,
   onDelete,
   onOpenShot,
@@ -1071,30 +1245,22 @@ function LineCard({
   item: TripItem;
   tripCurrency: string;
   photos: ScanShot[];
-  onMatch: (item: TripItem) => void;
   onEdit: (item: TripItem) => void;
   onDelete: (item: TripItem) => void;
   onOpenShot: (shot: ScanShot) => void;
   onUnmatch?: (item: TripItem) => void;
   onPair?: (item: TripItem) => void;
 }) {
+  const shot = photos.find((s) => s.itemId === item.id);
   return (
     <ItemCard
       item={item}
       currency={tripCurrency}
-      onMatch={onMatch}
       onEdit={onEdit}
       onDelete={onDelete}
       onUnmatch={onUnmatch}
       onPair={onPair}
-      onReprocess={
-        !photos.some((s) => s.itemId === item.id)
-          ? undefined
-          : (it) => {
-              const shot = photos.find((s) => s.itemId === it.id);
-              if (shot) onOpenShot(shot);
-            }
-      }
+      onOpen={shot ? () => onOpenShot(shot) : undefined}
     />
   );
 }

@@ -2,6 +2,22 @@
 
 All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
+## Unreleased
+
+## 0.3.16 — 2026-09-12
+
+- Debug this trip / Full debug wait up to 10 minutes. The prompt is compacted (no pretty JSON, no full OCR dumps).
+- Collate always uses the BYOK text model. Debug write-up appears in a box on Settings — copy it and paste it into this chat.
+- Trip page: Scan / Receipt / Collate / File as a 2×2 row. Add line, re-read, delete, CSV under More.
+- Cart rows: Pair / Unmatch / Edit / Remove only. Tap the photo to open it. Catalog “Match product” is gone from the trip.
+- Settings: How to read and BYOK first. PP-OCR size/feel behind Reading options. Empty collation block and Local LLM blurb removed.
+- Settings → Export JSON or CSV of trips and lines (no photos).
+- Settings → Edit model prompts. Shop aliases (Lulu = LuLu Hypermarket). Prompt preview with shop notes. Test on last photo. Draft notes from the photo.
+- File trip maps stats keys in the background. Printed cart names are not replaced. Variety stays (cherry tomato ≠ tomato); country drops (SA Gala = Gala).
+- Stats: Produce prices — cheapest shop and history per item. Tap a produce row to fix the stats key (cart names stay). Remap old trips is optional.
+- Search across trips (Home, Prices, or /search). Last paid toast after a label reads.
+- Trip: add a line without a photo, retry photos that couldn’t be read, merge duplicate cart rows. Re-read passes the store name.
+
 ## 0.3.15 — 2026-09-12
 
 - Unread photos show a banner and **Continue reading** — they do not start by themselves.

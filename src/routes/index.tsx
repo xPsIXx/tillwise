@@ -50,6 +50,21 @@ function Home() {
     <main className="pb-8 pt-6">
       <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted">Your ledger</p>
       <h1 className="mt-2 font-display text-4xl tracking-tight">Ready when you are</h1>
+      <form
+        className="mt-4 flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const q = new FormData(e.currentTarget).get("q");
+          if (typeof q === "string" && q.trim()) {
+            void navigate({ to: "/search", search: { q: q.trim() } });
+          }
+        }}
+      >
+        <Input name="q" placeholder="Search past trips…" className="flex-1" />
+        <Button type="submit" variant="secondary">
+          Search
+        </Button>
+      </form>
 
       {active ? (
         <section className="mt-6 rounded-2xl bg-surface p-5 shadow-[var(--shadow-border)]">
@@ -108,6 +123,9 @@ function Home() {
         <div className="flex items-baseline justify-between">
           <h2 className="font-display text-2xl">Recent</h2>
           <div className="flex gap-3">
+            <Link to="/search" className="text-sm text-muted hover:text-fg">
+              Search
+            </Link>
             <Link to="/analytics" className="text-sm text-muted hover:text-fg">
               Analytics
             </Link>

@@ -30,6 +30,9 @@ function TripsPage() {
           <div className="flex items-end justify-between gap-3">
             <h2 className="font-display text-xl">Recent shots</h2>
             <div className="flex gap-3">
+              <Link to="/search" className="text-xs text-muted hover:text-fg">
+                Search
+              </Link>
               <Link to="/prices" className="text-xs text-muted hover:text-fg">
                 Prices
               </Link>

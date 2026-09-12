@@ -78,6 +78,7 @@ function ScanPage() {
   return (
     <CameraView
       tripId={activeId}
+      storeName={active?.storeName ?? null}
       mode={scanMode}
       onMode={(next) => {
         void navigate({

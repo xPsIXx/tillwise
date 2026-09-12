@@ -47,24 +47,11 @@ export const READ_OPTIONS: { id: ReadMode; title: string; body: string }[] = [
   },
 ];
 
-export const COLLATE_OPTIONS: { id: LlmProvider; title: string; body: string }[] = [
-  {
-    id: "local",
-    title: "Local text LLM",
-    body: "Your server. TEXT_MODEL groups aisle names with till abbreviations (TOM VINE → tomatoes on the vine).",
-  },
-  {
-    id: "byok",
-    title: "BYOK text",
-    body: "Same remote API as vision, using the text model you set. Use when you do not have a local collate model.",
-  },
-];
-
 const KEY = "tillwise.scan-settings";
 
 const DEFAULTS: ScanSettings = {
   read: "ppocr",
-  collate: "local",
+  collate: "byok",
   autoAdd: true,
   debugSamples: false,
   visionDetail: "high",
@@ -146,7 +133,7 @@ export function loadScanSettings(): ScanSettings {
     if (read !== "ppocr" && read !== "byok") read = DEFAULTS.read;
     return {
       read,
-      collate: parsed.collate === "byok" || parsed.collate === "grok" ? "byok" : "local",
+      collate: "byok",
       autoAdd: parsed.autoAdd ?? DEFAULTS.autoAdd,
       debugSamples: Boolean(parsed.debugSamples),
       visionDetail: parsed.visionDetail === "low" ? "low" : "high",
@@ -193,5 +180,5 @@ export function effectiveRead(
 export function visionProvider(cfg: ScanSettings): LlmProvider {
   if (cfg.read === "byok" || cfg.read === "grok") return "byok";
   if (cfg.read === "local") return "local";
-  return cfg.collate === "grok" ? "byok" : cfg.collate;
+  return "byok";
 }

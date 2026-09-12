@@ -12,7 +12,9 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AnalyticsRouteImport } from './routes/analytics'
 import { Route as PricesRouteImport } from './routes/prices'
+import { Route as PromptsRouteImport } from './routes/prompts'
 import { Route as ScanRouteImport } from './routes/scan'
+import { Route as SearchRouteImport } from './routes/search'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ShotsRouteImport } from './routes/shots'
 import { Route as TripsRouteImport } from './routes/trips'
@@ -33,9 +35,19 @@ const PricesRoute = PricesRouteImport.update({
   path: '/prices',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PromptsRoute = PromptsRouteImport.update({
+  id: '/prompts',
+  path: '/prompts',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ScanRoute = ScanRouteImport.update({
   id: '/scan',
   path: '/scan',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SearchRoute = SearchRouteImport.update({
+  id: '/search',
+  path: '/search',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsRoute = SettingsRouteImport.update({
@@ -63,7 +75,9 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/analytics': typeof AnalyticsRoute
   '/prices': typeof PricesRoute
+  '/prompts': typeof PromptsRoute
   '/scan': typeof ScanRoute
+  '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/shots': typeof ShotsRoute
   '/trips': typeof TripsRoute
@@ -73,7 +87,9 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/analytics': typeof AnalyticsRoute
   '/prices': typeof PricesRoute
+  '/prompts': typeof PromptsRoute
   '/scan': typeof ScanRoute
+  '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/shots': typeof ShotsRoute
   '/trips': typeof TripsRoute
@@ -84,7 +100,9 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/analytics': typeof AnalyticsRoute
   '/prices': typeof PricesRoute
+  '/prompts': typeof PromptsRoute
   '/scan': typeof ScanRoute
+  '/search': typeof SearchRoute
   '/settings': typeof SettingsRoute
   '/shots': typeof ShotsRoute
   '/trips': typeof TripsRoute
@@ -96,7 +114,9 @@ export interface FileRouteTypes {
     | '/'
     | '/analytics'
     | '/prices'
+    | '/prompts'
     | '/scan'
+    | '/search'
     | '/settings'
     | '/shots'
     | '/trips'
@@ -106,7 +126,9 @@ export interface FileRouteTypes {
     | '/'
     | '/analytics'
     | '/prices'
+    | '/prompts'
     | '/scan'
+    | '/search'
     | '/settings'
     | '/shots'
     | '/trips'
@@ -116,7 +138,9 @@ export interface FileRouteTypes {
     | '/'
     | '/analytics'
     | '/prices'
+    | '/prompts'
     | '/scan'
+    | '/search'
     | '/settings'
     | '/shots'
     | '/trips'
@@ -127,7 +151,9 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AnalyticsRoute: typeof AnalyticsRoute
   PricesRoute: typeof PricesRoute
+  PromptsRoute: typeof PromptsRoute
   ScanRoute: typeof ScanRoute
+  SearchRoute: typeof SearchRoute
   SettingsRoute: typeof SettingsRoute
   ShotsRoute: typeof ShotsRoute
   TripsRoute: typeof TripsRoute
@@ -157,11 +183,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PricesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/prompts': {
+      id: '/prompts'
+      path: '/prompts'
+      fullPath: '/prompts'
+      preLoaderRoute: typeof PromptsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/scan': {
       id: '/scan'
       path: '/scan'
       fullPath: '/scan'
       preLoaderRoute: typeof ScanRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/search': {
+      id: '/search'
+      path: '/search'
+      fullPath: '/search'
+      preLoaderRoute: typeof SearchRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings': {
@@ -199,7 +239,9 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AnalyticsRoute: AnalyticsRoute,
   PricesRoute: PricesRoute,
+  PromptsRoute: PromptsRoute,
   ScanRoute: ScanRoute,
+  SearchRoute: SearchRoute,
   SettingsRoute: SettingsRoute,
   ShotsRoute: ShotsRoute,
   TripsRoute: TripsRoute,

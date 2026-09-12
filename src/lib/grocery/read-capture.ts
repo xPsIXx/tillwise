@@ -10,7 +10,7 @@ export async function readLabelCapture(
   image: string,
   barcode: string | null,
   read?: ReadMode,
-  opts?: { skipMemory?: boolean },
+  opts?: { skipMemory?: boolean; storeName?: string | null },
 ): Promise<LabelExtraction> {
   const cfg = loadScanSettings();
   const mode = effectiveRead({ ...cfg, read: read ?? cfg.read });
@@ -44,6 +44,7 @@ export async function readLabelCapture(
       barcodeHint: barcode,
       detail: cfg.visionDetail,
       provider: mode === "byok" || mode === "grok" ? "byok" : "local",
+      storeName: opts?.storeName ?? null,
     },
   });
   if (!result.ok) throw new Error(result.error);
@@ -62,6 +63,7 @@ async function withMemory(data: LabelExtraction, barcode: string | null): Promis
 export async function readReceiptCapture(
   image: string,
   provider?: LlmProvider,
+  storeName?: string | null,
 ): Promise<ReceiptExtraction> {
   const cfg = loadScanSettings();
   const visionImage = await fitVisionImage(image);
@@ -70,6 +72,7 @@ export async function readReceiptCapture(
       imageDataUrl: visionImage,
       detail: cfg.visionDetail,
       provider: provider ?? visionProvider(cfg),
+      storeName: storeName ?? null,
     },
   });
   if (!result.ok) throw new Error(result.error);
@@ -101,6 +104,7 @@ function chunkBySize<T extends { chars: number }>(
 
 export async function readLabelCaptureBatch(
   photos: { image: string; barcode: string | null }[],
+  storeName?: string | null,
 ): Promise<{ results: BatchRead<LabelExtraction>[]; calls: number }> {
   if (photos.length === 0) return { results: [], calls: 0 };
   const cfg = loadScanSettings();
@@ -121,6 +125,7 @@ export async function readLabelCaptureBatch(
           photos: chunk.map(({ imageDataUrl, barcodeHint }) => ({ imageDataUrl, barcodeHint })),
           detail: cfg.visionDetail,
           provider: "byok",
+          storeName: storeName ?? null,
         },
       });
       results.push(...batch);
@@ -134,6 +139,7 @@ export async function readLabelCaptureBatch(
 
 export async function readReceiptCaptureBatch(
   images: string[],
+  storeName?: string | null,
 ): Promise<{ results: BatchRead<ReceiptExtraction>[]; calls: number }> {
   if (images.length === 0) return { results: [], calls: 0 };
   const cfg = loadScanSettings();
@@ -154,6 +160,7 @@ export async function readReceiptCaptureBatch(
           images: chunk.map((c) => c.imageDataUrl),
           detail: cfg.visionDetail,
           provider: "byok",
+          storeName: storeName ?? null,
         },
       });
       results.push(...batch);

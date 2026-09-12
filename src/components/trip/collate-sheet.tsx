@@ -172,6 +172,7 @@ export function CollateSheet({
                     onClick={() => {
                       if (pick) pairHand(pick, row);
                     }}
+                    disabled={!pick}
                   >
                     {row.tillName}{" "}
                     <span className="tabular-nums text-muted">

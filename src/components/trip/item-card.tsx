@@ -1,4 +1,4 @@
-import { LoaderCircle, Pencil, RefreshCw, Trash2 } from "lucide-react";
+import { LoaderCircle, Pencil, Trash2 } from "lucide-react";
 import type { TripItem } from "@/lib/grocery/types";
 import { money, qty, unitMoney, weight } from "@/lib/grocery/format";
 import { Badge } from "@/components/ui/badge";
@@ -18,25 +18,28 @@ export function ItemCard({
   currency,
   onEdit,
   onDelete,
-  onReprocess,
-  onMatch,
   onUnmatch,
   onPair,
+  onOpen,
 }: {
   item: TripItem;
   currency: string;
   onEdit?: (item: TripItem) => void;
   onDelete?: (item: TripItem) => void;
-  onReprocess?: (item: TripItem) => void;
-  onMatch?: (item: TripItem) => void;
   onUnmatch?: (item: TripItem) => void;
   onPair?: (item: TripItem) => void;
+  onOpen?: (item: TripItem) => void;
 }) {
   const match = MATCH[item.matchStatus] ?? MATCH.unmatched;
   const reading = item.matchStatus === "processing";
   return (
     <article className="flex gap-3 rounded-xl bg-surface p-3 shadow-[var(--shadow-border)]">
-      <div className="relative size-16 shrink-0 overflow-hidden rounded-md bg-elevated">
+      <button
+        type="button"
+        className="relative size-16 shrink-0 overflow-hidden rounded-md bg-elevated"
+        onClick={() => onOpen?.(item)}
+        disabled={!onOpen}
+      >
         {item.thumbnailData ? (
           <img
             src={item.thumbnailData}
@@ -53,7 +56,7 @@ export function ItemCard({
             <LoaderCircle className="size-5 animate-spin text-accent" />
           </div>
         )}
-      </div>
+      </button>
       <div className="min-w-0 flex-1">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
@@ -102,7 +105,7 @@ export function ItemCard({
         {!reading && item.quantity != null && item.quantity !== 1 ? (
           <p className="mt-1 text-[11px] text-subtle">{qty(item.quantity, item.quantityUnit)}</p>
         ) : null}
-        {(onEdit || onDelete || onReprocess || onMatch || onUnmatch || onPair) && !reading && (
+        {(onEdit || onDelete || onUnmatch || onPair) && !reading && (
           <div className="mt-2 flex flex-wrap justify-end gap-1">
             {onPair && (item.matchStatus === "label_only" || item.matchStatus === "unmatched") && (
               <Button
@@ -112,7 +115,7 @@ export function ItemCard({
                 className="h-9 px-2 text-muted"
                 onClick={() => onPair(item)}
               >
-                Pair with till line
+                Pair with till
               </Button>
             )}
             {onUnmatch && item.matchStatus === "matched" && (
@@ -124,29 +127,6 @@ export function ItemCard({
                 onClick={() => onUnmatch(item)}
               >
                 Unmatch
-              </Button>
-            )}
-            {onMatch && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-9 px-2 text-muted"
-                onClick={() => onMatch(item)}
-              >
-                {item.productId ? "Rematch" : "Match product"}
-              </Button>
-            )}
-            {onReprocess && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-9 px-2 text-muted"
-                onClick={() => onReprocess(item)}
-              >
-                <RefreshCw className="size-3.5" />
-                Reprocess
               </Button>
             )}
             {onEdit && (

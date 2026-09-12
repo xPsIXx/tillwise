@@ -250,6 +250,20 @@ export type GroceryAnalytics = {
   cheapestUnit: StoreUnitPrice[];
 };
 
+export type ProduceWatch = {
+  key: string;
+  productId: number | null;
+  name: string;
+  currency: string;
+  cheapestStore: string;
+  cheapestUnit: number;
+  lastUnit: number;
+  prevUnit: number | null;
+  changePct: number | null;
+  stores: { store: string; unitPrice: number; observedAt: string }[];
+  history: { observedAt: string; store: string; unitPrice: number }[];
+};
+
 export type PricePoint = {
   id: number;
   name: string;
@@ -261,4 +275,54 @@ export type PricePoint = {
   weightUnit: string | null;
   currency: string;
   observedAt: string;
+};
+
+export type SearchHit = {
+  itemId: number;
+  tripId: number;
+  storeName: string | null;
+  startedAt: string;
+  tripStatus: TripStatus;
+  name: string;
+  brand: string | null;
+  barcode: string | null;
+  linePrice: number | null;
+  unitPrice: number | null;
+  weightValue: number | null;
+  weightUnit: string | null;
+  currency: string;
+  matchStatus: MatchStatus;
+};
+
+export type LedgerExport = {
+  exportedAt: string;
+  app: string;
+  trips: {
+    id: number;
+    storeName: string | null;
+    storeLocation: string | null;
+    startedAt: string;
+    completedAt: string | null;
+    status: TripStatus;
+    receiptSubtotal: number | null;
+    receiptTax: number | null;
+    receiptTotal: number | null;
+    currency: string;
+    notes: string | null;
+    items: {
+      id: number;
+      name: string;
+      brand: string | null;
+      barcode: string | null;
+      quantity: number | null;
+      quantityUnit: string | null;
+      weightValue: number | null;
+      weightUnit: string | null;
+      unitPrice: number | null;
+      linePrice: number | null;
+      matchStatus: MatchStatus;
+      tillName: string | null;
+      source: ItemSource;
+    }[];
+  }[];
 };

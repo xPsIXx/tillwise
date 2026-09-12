@@ -1,2 +1,2 @@
 /** Shown in the header. Bump when tagging a release. */
-export const APP_VERSION = "0.3.15";
+export const APP_VERSION = "0.3.16";

@@ -3,6 +3,42 @@ import { resolveEndpoint, loadLlmConfig } from "./llm";
 import type { ScanSettings } from "./settings";
 import type { LlmProvider, TripDetail } from "./types";
 
+function clip(text: string | null | undefined, n = 240): string | null {
+  if (!text) return null;
+  return text.length > n ? `${text.slice(0, n)}…` : text;
+}
+
+function slimLastRead(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  const o = value as Record<string, unknown>;
+  if (Array.isArray(o.items)) {
+    return {
+      storeName: o.storeName ?? null,
+      total: o.total ?? null,
+      tax: o.tax ?? null,
+      subtotal: o.subtotal ?? null,
+      itemCount: o.items.length,
+      items: o.items.map((row) => {
+        const it = row as Record<string, unknown>;
+        return {
+          name: it.name,
+          quantity: it.quantity,
+          weightValue: it.weightValue,
+          linePrice: it.linePrice,
+        };
+      }),
+    };
+  }
+  return {
+    name: o.name ?? null,
+    brand: o.brand ?? null,
+    barcode: o.barcode ?? null,
+    weightValue: o.weightValue ?? null,
+    linePrice: o.linePrice ?? null,
+    rawText: clip(typeof o.rawText === "string" ? o.rawText : null, 200),
+  };
+}
+
 function stripImages(value: unknown): unknown {
   if (typeof value === "string") {
     if (value.startsWith("data:image") || value.startsWith("data:application")) {
@@ -53,7 +89,7 @@ export async function tripSnapshot(
   return {
     app: APP_VERSION,
     howCollateWorks:
-      "Collate does not re-read photos. It loads current cart rows + receipt extracts, asks the text model to merge aisle names with till abbreviations, DELETE FROM trip_items for the trip, then inserts the merge. Photos stay on disk and are relinked by barcode/name. Wrong totals and doubled lines usually come from that merge, not from a second OCR pass.",
+      "Collate previews label ↔ till pairs, then writes only after Confirm. One cart row per label. Matched means a sticker and a till line. Printed till total is kept. Photos stay on disk and keep their item ids.",
     settings: settings
       ? {
           read: settings.read,
@@ -114,7 +150,7 @@ export async function tripSnapshot(
         unitPrice: it.unitPrice,
         linePrice: it.linePrice,
         currency: it.currency,
-        rawText: it.rawText,
+        rawText: clip(it.rawText, 240),
         productId: it.productId,
         productName: it.productName,
       })),
@@ -123,7 +159,7 @@ export async function tripSnapshot(
       receipts.map((r) => ({
         id: r.id,
         sequence: r.sequence,
-        extracted: r.extracted,
+        extracted: slimLastRead(r.extracted),
       })),
     ),
     shots: stripImages(
@@ -134,7 +170,7 @@ export async function tripSnapshot(
         captureId: s.captureId,
         barcode: s.barcode,
         createdAt: s.createdAt,
-        lastRead: s.lastRead,
+        lastRead: slimLastRead(s.lastRead),
       })),
     ),
   };
@@ -144,14 +180,15 @@ export async function askLlmAboutTrip(
   snapshot: unknown,
   provider: LlmProvider,
   scope: "trip" | "full",
-): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
+): Promise<{ ok: true; text: string; promptChars: number } | { ok: false; error: string; promptChars: number }> {
   let endpoint: Awaited<ReturnType<typeof resolveEndpoint>>;
   try {
     endpoint = await resolveEndpoint(provider, "text");
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Set a collate model in Settings." };
+    return { ok: false, error: err instanceof Error ? err.message : "Set a collate model in Settings.", promptChars: 0 };
   }
 
+  const packed = JSON.stringify(snapshot);
   const prompt =
     scope === "full"
       ? `Write a paste-ready debug report for the Tillwise developer (they will paste this into a Grok Build chat). FULL ledger dump: every trip's rows, no photos. App diagnosis, not a review of the user's LLM host.
@@ -164,7 +201,7 @@ Cover:
 5. End with "Paste to Grok".
 
 SNAPSHOT:
-${JSON.stringify(snapshot, null, 2)}`
+${packed}`
       : `Write a paste-ready debug report for the Tillwise developer (they will paste this into a Grok Build chat). This is ONE open trip. App diagnosis, not a review of the user's LLM server.
 
 Shopper complaint: after Collate, totals are wrong, a label did not match the till slip, lines look doubled, photos seemed re-scanned.
@@ -173,15 +210,15 @@ Cover:
 1. Facts from the snapshot (store, item count, line sum vs printed total, unmatched/duplicate names).
 2. The actions log: which buttons were tapped and whether they succeeded.
 3. Each problem line by name and price. Say if it is a collate-merge bug, a till-slip extract bug, or a label extract bug.
-3. App behaviour that caused it (Collate deletes cart rows and inserts the merge; photos are not OCR'd again).
 4. Suggested next taps in the app.
 5. Anything in the ledger/settings block that looks like an app bug.
 
 Be long and specific. End with a section titled "Paste to Grok" that is self-contained. No JSON in the prose (the snapshot is already attached).
 
 SNAPSHOT:
-${JSON.stringify(snapshot, null, 2)}`;
+${packed}`;
 
+  const promptChars = prompt.length;
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (endpoint.apiKey) headers.Authorization = `Bearer ${endpoint.apiKey}`;
 
@@ -204,22 +241,23 @@ ${JSON.stringify(snapshot, null, 2)}`;
       method: "POST",
       headers,
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(Math.max(endpoint.timeoutMs, 180_000)),
+      signal: AbortSignal.timeout(600_000),
     });
     if (!res.ok) {
       const t = await res.text().catch(() => "");
-      return { ok: false, error: `Model ${res.status}. ${t.slice(0, 240)}`.trim() };
+      return { ok: false, error: `Model ${res.status}. ${t.slice(0, 240)}`.trim(), promptChars };
     }
     const json = (await res.json()) as {
       choices?: { message?: { content?: string } }[];
     };
     const text = json.choices?.[0]?.message?.content?.trim();
-    if (!text) return { ok: false, error: "The model returned an empty reply." };
-    return { ok: true, text };
+    if (!text) return { ok: false, error: "The model returned an empty reply.", promptChars };
+    return { ok: true, text, promptChars };
   } catch (err) {
     return {
       ok: false,
       error: err instanceof Error ? err.message : "Could not reach the model.",
+      promptChars,
     };
   }
 }

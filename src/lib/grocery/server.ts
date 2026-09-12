@@ -1,5 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
+import { APP_VERSION } from "@/lib/version";
 import { checkpointLedger, getSql } from "@/lib/db";
+import { loadPromptPack, savePromptPack as persistPromptPack } from "@/lib/grocery/prompt-store";
+import { DEFAULT_PROMPTS, resolveShopKey, suggestAliases, withShopNote, type PromptPack } from "@/lib/grocery/prompts";
 import { recordAction, readActions } from "@/lib/action-log";
 import {
   asFileRef,
@@ -21,10 +24,13 @@ import type {
   CollatedItem,
   GroceryAnalytics,
   LabelExtraction,
+  LedgerExport,
   LlmProvider,
   PricePoint,
+  ProduceWatch,
   ProductMemory,
   ReceiptCapture,
+  SearchHit,
   StoreUnitPrice,
   ReceiptExtraction,
   ScanShot,
@@ -128,9 +134,11 @@ function mapShot(row: ShotRow): ScanShot {
 async function loadShots(tripId: number): Promise<ScanShot[]> {
   const sql = await getSql();
   const rows = await sql<ShotRow>`
-    select id, trip_id, kind, thumbnail_data, barcode, item_id, capture_id, last_read_json, created_at
-      from scan_shots
-     where trip_id = ${tripId}
+    select s.id, s.trip_id, s.kind, s.thumbnail_data, s.barcode, s.item_id, s.capture_id,
+           s.last_read_json, s.created_at, t.store_name
+      from scan_shots s
+      join trips t on t.id = s.trip_id
+     where s.trip_id = ${tripId}
      order by created_at desc, id desc
   `;
   return rows.map(mapShot);
@@ -538,6 +546,7 @@ export const scanLabelPhoto = createServerFn({ method: "POST" })
       barcodeHint?: string | null;
       detail?: "low" | "high";
       provider?: LlmProvider;
+      storeName?: string | null;
     }) => {
       if (!input.imageDataUrl || input.imageDataUrl.length > 2_400_000) {
         throw new Error("Photo is too large");
@@ -551,12 +560,13 @@ export const scanLabelPhoto = createServerFn({ method: "POST" })
       barcodeHint: data.barcodeHint,
       detail: data.detail,
       provider: data.provider ?? "local",
+      storeName: data.storeName ?? null,
     });
   });
 
 export const scanReceiptPhoto = createServerFn({ method: "POST" })
   .validator(
-    (input: { imageDataUrl: string; detail?: "low" | "high"; provider?: LlmProvider }) => {
+    (input: { imageDataUrl: string; detail?: "low" | "high"; provider?: LlmProvider; storeName?: string | null }) => {
       if (!input.imageDataUrl || input.imageDataUrl.length > 2_400_000) {
         throw new Error("Photo is too large");
       }
@@ -568,6 +578,7 @@ export const scanReceiptPhoto = createServerFn({ method: "POST" })
     return readReceiptImage(data.imageDataUrl, {
       detail: data.detail,
       provider: data.provider ?? "local",
+      storeName: data.storeName ?? null,
     });
   });
 
@@ -577,6 +588,7 @@ export const scanLabelPhotos = createServerFn({ method: "POST" })
       photos: { imageDataUrl: string; barcodeHint?: string | null }[];
       detail?: "low" | "high";
       provider?: LlmProvider;
+      storeName?: string | null;
     }) => {
       if (!Array.isArray(input.photos) || input.photos.length === 0) {
         throw new Error("No photos to read");
@@ -597,12 +609,13 @@ export const scanLabelPhotos = createServerFn({ method: "POST" })
     return readLabelImages(data.photos, {
       detail: data.detail,
       provider: data.provider ?? "local",
+      storeName: data.storeName ?? null,
     });
   });
 
 export const scanReceiptPhotos = createServerFn({ method: "POST" })
   .validator(
-    (input: { images: string[]; detail?: "low" | "high"; provider?: LlmProvider }) => {
+    (input: { images: string[]; detail?: "low" | "high"; provider?: LlmProvider; storeName?: string | null }) => {
       if (!Array.isArray(input.images) || input.images.length === 0) {
         throw new Error("No photos to read");
       }
@@ -622,6 +635,7 @@ export const scanReceiptPhotos = createServerFn({ method: "POST" })
     return readReceiptImages(data.images, {
       detail: data.detail,
       provider: data.provider ?? "local",
+      storeName: data.storeName ?? null,
     });
   });
 
@@ -707,7 +721,7 @@ export const previewCollate = createServerFn({ method: "POST" })
   .validator((input: { tripId: number; provider?: LlmProvider }) => input)
   .handler(async ({ data }): Promise<CollatePreview> => {
     const tripId = data.tripId;
-    const provider = data.provider ?? "local";
+    const provider = data.provider ?? "byok";
     const trip = await loadTrip(tripId);
     if (!trip) throw new Error("Trip not found");
     const [items, receipts] = await Promise.all([loadItems(tripId), loadReceipts(tripId)]);
@@ -739,7 +753,7 @@ export const applyCollate = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }): Promise<TripDetail & { usedLocalCollate: boolean }> => {
     const tripId = data.tripId;
-    const provider = data.provider ?? "local";
+    const provider = data.provider ?? "byok";
     const trip = await loadTrip(tripId);
     if (!trip) throw new Error("Trip not found");
     const [items, receipts] = await Promise.all([loadItems(tripId), loadReceipts(tripId)]);
@@ -1640,6 +1654,273 @@ export const listRememberedProducts = createServerFn({ method: "GET" }).handler(
   },
 );
 
+export const lastPaid = createServerFn({ method: "POST" })
+  .validator(
+    (input: { barcode?: string | null; name?: string | null; excludeTripId?: number | null }) =>
+      input,
+  )
+  .handler(async ({ data }): Promise<PricePoint | null> => {
+    const sql = await getSql();
+    const barcode = data.barcode?.trim() || null;
+    const key = data.name ? catalogKey(data.name) : "";
+    if (!barcode && !key) return null;
+    const exclude = data.excludeTripId ?? null;
+    const rows = await sql<{
+      id: number;
+      name: string;
+      barcode: string | null;
+      store_name: string | null;
+      unit_price: unknown;
+      line_price: unknown;
+      weight_value: unknown;
+      weight_unit: string | null;
+      currency: string;
+      observed_at: unknown;
+    }>`
+      select id, name, barcode, store_name, unit_price, line_price, weight_value, weight_unit, currency, observed_at
+        from price_observations
+       where (
+            (${barcode}::text is not null and barcode = ${barcode})
+         or (${key} <> '' and name_key = ${key})
+       )
+         and (${exclude}::int is null or trip_id is distinct from ${exclude})
+       order by observed_at desc
+       limit 1
+    `;
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      id: Number(row.id),
+      name: row.name,
+      barcode: row.barcode,
+      storeName: row.store_name,
+      unitPrice: n(row.unit_price),
+      linePrice: n(row.line_price),
+      weightValue: n(row.weight_value),
+      weightUnit: row.weight_unit,
+      currency: row.currency || "AED",
+      observedAt: iso(row.observed_at),
+    };
+  });
+
+export const searchLedger = createServerFn({ method: "POST" })
+  .validator((q: string) => q)
+  .handler(async ({ data: raw }): Promise<SearchHit[]> => {
+    const q = raw.trim();
+    if (q.length < 1) return [];
+    const like = `%${q.replace(/[%_]/g, "")}%`;
+    const sql = await getSql();
+    const rows = await sql<{
+      id: number;
+      trip_id: number;
+      store_name: string | null;
+      started_at: unknown;
+      status: string;
+      name: string;
+      brand: string | null;
+      barcode: string | null;
+      line_price: unknown;
+      unit_price: unknown;
+      weight_value: unknown;
+      weight_unit: string | null;
+      currency: string | null;
+      trip_currency: string;
+      match_status: string;
+    }>`
+      select i.id, i.trip_id, t.store_name, t.started_at, t.status, i.name, i.brand, i.barcode,
+             i.line_price, i.unit_price, i.weight_value, i.weight_unit, i.currency, t.currency as trip_currency,
+             i.match_status
+        from trip_items i
+        join trips t on t.id = i.trip_id
+       where i.name ilike ${like}
+          or coalesce(i.brand, '') ilike ${like}
+          or coalesce(i.barcode, '') ilike ${like}
+          or coalesce(i.till_name, '') ilike ${like}
+          or coalesce(t.store_name, '') ilike ${like}
+       order by t.started_at desc, i.id desc
+       limit 60
+    `;
+    return rows.map((row) => ({
+      itemId: Number(row.id),
+      tripId: Number(row.trip_id),
+      storeName: row.store_name,
+      startedAt: iso(row.started_at),
+      tripStatus: row.status as TripStatus,
+      name: row.name,
+      brand: row.brand,
+      barcode: row.barcode,
+      linePrice: n(row.line_price),
+      unitPrice: n(row.unit_price),
+      weightValue: n(row.weight_value),
+      weightUnit: row.weight_unit,
+      currency: row.currency || row.trip_currency || "AED",
+      matchStatus: row.match_status as SearchHit["matchStatus"],
+    }));
+  });
+
+export const exportLedger = createServerFn({ method: "GET" }).handler(
+  async (): Promise<LedgerExport> => {
+    const sql = await getSql();
+    const trips = await sql<{
+      id: number;
+      store_name: string | null;
+      store_location: string | null;
+      started_at: unknown;
+      completed_at: unknown;
+      status: string;
+      receipt_subtotal: unknown;
+      receipt_tax: unknown;
+      receipt_total: unknown;
+      currency: string;
+      notes: string | null;
+    }>`
+      select id, store_name, store_location, started_at, completed_at, status,
+             receipt_subtotal, receipt_tax, receipt_total, currency, notes
+        from trips
+       order by started_at desc
+    `;
+    const items = await sql<{
+      id: number;
+      trip_id: number;
+      source: string;
+      name: string;
+      brand: string | null;
+      barcode: string | null;
+      quantity: unknown;
+      quantity_unit: string | null;
+      weight_value: unknown;
+      weight_unit: string | null;
+      unit_price: unknown;
+      line_price: unknown;
+      match_status: string;
+      till_name: string | null;
+    }>`
+      select id, trip_id, source, name, brand, barcode, quantity, quantity_unit,
+             weight_value, weight_unit, unit_price, line_price, match_status, till_name
+        from trip_items
+       order by trip_id, id
+    `;
+    const byTrip = new Map<number, LedgerExport["trips"][number]["items"]>();
+    for (const row of items) {
+      const list = byTrip.get(Number(row.trip_id)) ?? [];
+      list.push({
+        id: Number(row.id),
+        name: row.name,
+        brand: row.brand,
+        barcode: row.barcode,
+        quantity: n(row.quantity),
+        quantityUnit: row.quantity_unit,
+        weightValue: n(row.weight_value),
+        weightUnit: row.weight_unit,
+        unitPrice: n(row.unit_price),
+        linePrice: n(row.line_price),
+        matchStatus: row.match_status as TripItem["matchStatus"],
+        tillName: row.till_name,
+        source: row.source as TripItem["source"],
+      });
+      byTrip.set(Number(row.trip_id), list);
+    }
+    return {
+      exportedAt: new Date().toISOString(),
+      app: APP_VERSION,
+      trips: trips.map((t) => ({
+        id: Number(t.id),
+        storeName: t.store_name,
+        storeLocation: t.store_location,
+        startedAt: iso(t.started_at),
+        completedAt: t.completed_at ? iso(t.completed_at) : null,
+        status: t.status as TripStatus,
+        receiptSubtotal: n(t.receipt_subtotal),
+        receiptTax: n(t.receipt_tax),
+        receiptTotal: n(t.receipt_total),
+        currency: t.currency,
+        notes: t.notes,
+        items: byTrip.get(Number(t.id)) ?? [],
+      })),
+    };
+  },
+);
+
+export const addManualItem = createServerFn({ method: "POST" })
+  .validator(
+    (input: {
+      tripId: number;
+      name: string;
+      linePrice?: number | null;
+      unitPrice?: number | null;
+      weightValue?: number | null;
+      weightUnit?: string | null;
+      quantity?: number | null;
+    }) => input,
+  )
+  .handler(async ({ data }): Promise<TripItem> => {
+    const name = data.name.trim();
+    if (!name) throw new Error("Name is required");
+    const num = (v: number | null | undefined) =>
+      v == null || Number.isNaN(v) ? null : v;
+    const extracted: LabelExtraction = {
+      name,
+      brand: null,
+      description: null,
+      barcode: null,
+      category: null,
+      quantity: num(data.quantity),
+      quantityUnit: null,
+      weightValue: num(data.weightValue),
+      weightUnit: data.weightUnit?.trim() || null,
+      unitPrice: num(data.unitPrice),
+      linePrice: num(data.linePrice),
+      currency: null,
+      origin: null,
+      rawText: "manual",
+    };
+    const item = await addLabelItem({
+      data: {
+        tripId: data.tripId,
+        extracted,
+        matchStatus: "unmatched",
+      },
+    });
+    recordAction({ action: "addManualItem", ok: true, tripId: data.tripId, detail: name });
+    await checkpointLedger();
+    return item;
+  });
+
+export const mergeDuplicateItems = createServerFn({ method: "POST" })
+  .validator((tripId: number) => tripId)
+  .handler(async ({ data: tripId }): Promise<{ merged: number; kept: number }> => {
+    const sql = await getSql();
+    const items = await loadItems(tripId);
+    const groups = new Map<string, TripItem[]>();
+    for (const item of items) {
+      if (item.matchStatus !== "unmatched" && item.matchStatus !== "label_only") continue;
+      const key = catalogKey(item.name);
+      if (!key || key === "reading label" || key === "couldn t read") continue;
+      const list = groups.get(key) ?? [];
+      list.push(item);
+      groups.set(key, list);
+    }
+    let merged = 0;
+    let kept = 0;
+    for (const group of groups.values()) {
+      if (group.length < 2) continue;
+      const keep = group.find((i) => i.thumbnailData) ?? group[0];
+      if (!keep) continue;
+      const others = group.filter((i) => i.id !== keep.id);
+      for (const id of others.map((i) => i.id)) {
+        await sql`update scan_shots set item_id = ${keep.id} where item_id = ${id}`;
+        await sql`delete from trip_items where id = ${id}`;
+      }
+      merged += others.length;
+      kept += 1;
+    }
+    if (merged) {
+      recordAction({ action: "mergeDuplicateItems", ok: true, tripId, detail: `${merged} into ${kept}` });
+      await checkpointLedger();
+    }
+    return { merged, kept };
+  });
+
 export const listCanonicalProducts = createServerFn({ method: "GET" }).handler(
   async (): Promise<CanonicalProduct[]> => {
     const sql = await getSql();
@@ -1945,7 +2226,7 @@ async function loadFullDebugDump() {
   }>(
     `select id, trip_id, source, name, brand, barcode, quantity, quantity_unit,
             weight_value, weight_unit, unit_price, line_price, match_status,
-            match_confidence, raw_text
+            match_confidence, left(raw_text, 240) as raw_text
        from trip_items order by trip_id, id`,
   );
   const receipts = await sql.query<{
@@ -2006,7 +2287,23 @@ async function loadFullDebugDump() {
       createdAt: s.created_at,
       imageChars: Number(s.image_chars),
       thumbChars: Number(s.thumb_chars),
-      lastRead: parseJson(s.last_read_json),
+      lastRead: (() => {
+        const parsed = parseJson(s.last_read_json);
+        if (!parsed || typeof parsed !== "object") return parsed;
+        const o = parsed as Record<string, unknown>;
+        if (Array.isArray(o.items)) {
+          return {
+            storeName: o.storeName,
+            total: o.total,
+            itemCount: o.items.length,
+            items: o.items.map((row) => {
+              const it = row as Record<string, unknown>;
+              return { name: it.name, linePrice: it.linePrice, weightValue: it.weightValue };
+            }),
+          };
+        }
+        return { name: o.name, barcode: o.barcode, linePrice: o.linePrice, weightValue: o.weightValue };
+      })(),
     })),
     blobBytes: sizes[0] ?? null,
   };
@@ -2041,7 +2338,7 @@ export const troubleshootTrip = createServerFn({ method: "POST" })
     } catch {
       ledger = null;
     }
-    const actions = readActions(250);
+    const actions = readActions(80);
     const { tripSnapshot, askLlmAboutTrip } = await import("./troubleshoot");
     const settings = (data.settings as import("./settings").ScanSettings | null) ?? null;
     let snapshot: unknown;
@@ -2067,26 +2364,29 @@ export const troubleshootTrip = createServerFn({ method: "POST" })
       snapshot = await tripSnapshot({ trip, items, receipts, shots }, settings, { ledger, actions });
     }
     const result = await askLlmAboutTrip(snapshot, data.provider ?? "byok", scope);
-    if (!result.ok) throw new Error(result.error);
+    if (!result.ok) throw new Error(`${result.error}${result.promptChars ? ` (prompt ${result.promptChars} chars)` : ""}`);
     recordAction({ action: `debug:${scope}`, ok: true, tripId: data.tripId });
     const app =
       snapshot && typeof snapshot === "object" && "app" in snapshot
         ? String((snapshot as { app?: string }).app ?? "")
         : "";
+    const approxTokens = Math.round(result.promptChars / 4);
     const report = [
       `# Tillwise debug ${app} · ${scope === "full" ? "full ledger" : `trip ${trip.id}`}`,
+      `Prompt sent: ${result.promptChars} characters (~${approxTokens} tokens). Waited up to 10 minutes.`,
       "",
       result.text,
       "",
       "## Snapshot JSON",
       "```json",
-      JSON.stringify(snapshot, null, 2),
+      JSON.stringify(snapshot),
       "```",
     ].join("\n");
     return {
       diagnosis: result.text,
       report,
       scope,
+      promptChars: result.promptChars,
       sent: {
         items: 0,
         receiptSlips: 0,
@@ -2170,24 +2470,38 @@ export const saveLlmConfig = createServerFn({ method: "POST" })
   });
 
 export const generateCommonNames = createServerFn({ method: "POST" })
-  .validator((input: { provider?: LlmProvider }) => input)
+  .validator((input: { provider?: LlmProvider; tripId?: number }) => input)
   .handler(async ({ data }): Promise<{ mapped: number }> => {
     const sql = await getSql();
-    const names = await sql<{ name: string }>`
-      select distinct name
-        from trip_items
-       where name is not null
-         and trim(name) <> ''
-         and name not ilike 'Reading%'
-         and name not ilike 'Couldn''t%'
-         and name not ilike 'Unknown%'
-       order by name
-       limit 200
-    `;
+    const tripId = data.tripId ?? null;
+    const names = tripId
+      ? await sql<{ name: string }>`
+          select distinct name
+            from trip_items
+           where trip_id = ${tripId}
+             and name is not null
+             and trim(name) <> ''
+             and name not ilike 'Reading%'
+             and name not ilike 'Couldn''t%'
+             and name not ilike 'Unknown%'
+           order by name
+           limit 80
+        `
+      : await sql<{ name: string }>`
+          select distinct name
+            from trip_items
+           where name is not null
+             and trim(name) <> ''
+             and name not ilike 'Reading%'
+             and name not ilike 'Couldn''t%'
+             and name not ilike 'Unknown%'
+           order by name
+           limit 200
+        `;
     const { mapCommonNames } = await import("./vision");
     const result = await mapCommonNames(
       names.map((r) => r.name),
-      data.provider ?? "local",
+      data.provider ?? "byok",
     );
     if (!result.ok) throw new Error(result.error);
     let mapped = 0;
@@ -2224,7 +2538,311 @@ export const generateCommonNames = createServerFn({ method: "POST" })
            set product_id = ${productId}
          where lower(name) = lower(${printed})
       `;
+      await sql`
+        update price_observations
+           set product_id = ${productId}
+         where name_key = ${printedKey} or name_key = ${commonKey}
+      `;
       mapped += 1;
     }
     return { mapped };
   });
+
+export const listProducePrices = createServerFn({ method: "GET" }).handler(
+  async (): Promise<ProduceWatch[]> => {
+    const sql = await getSql();
+    const obs = await sql<{
+      product_id: number | null;
+      product_name: string | null;
+      name: string;
+      store_name: string | null;
+      unit_price: unknown;
+      line_price: unknown;
+      weight_value: unknown;
+      currency: string;
+      observed_at: unknown;
+    }>`
+      select o.product_id, p.name as product_name, o.name, o.store_name,
+             o.unit_price, o.line_price, o.weight_value, o.currency, o.observed_at
+        from price_observations o
+        left join products p on p.id = o.product_id
+       order by o.observed_at asc
+    `;
+    type Acc = {
+      key: string;
+      productId: number | null;
+      name: string;
+      currency: string;
+      history: ProduceWatch["history"];
+    };
+    const groups = new Map<string, Acc>();
+    for (const row of obs) {
+      const unit = perUnitPrice(n(row.unit_price), n(row.line_price), n(row.weight_value), null);
+      if (unit == null) continue;
+      const store = (row.store_name ?? "Unknown").trim() || "Unknown";
+      const key = row.product_id ? `p:${row.product_id}` : `n:${catalogKey(row.name)}`;
+      const acc = groups.get(key) ?? {
+        key,
+        productId: row.product_id != null ? Number(row.product_id) : null,
+        name: row.product_name || row.name,
+        currency: row.currency || "AED",
+        history: [],
+      };
+      acc.history.push({ observedAt: iso(row.observed_at), store, unitPrice: unit });
+      if (row.product_name) acc.name = row.product_name;
+      groups.set(key, acc);
+    }
+    const watches: ProduceWatch[] = [];
+    for (const acc of groups.values()) {
+      if (acc.history.length === 0) continue;
+      const latestByStore = new Map<string, ProduceWatch["stores"][number]>();
+      for (const h of acc.history) {
+        const prev = latestByStore.get(h.store);
+        if (!prev || h.observedAt > prev.observedAt) {
+          latestByStore.set(h.store, {
+            store: h.store,
+            unitPrice: h.unitPrice,
+            observedAt: h.observedAt,
+          });
+        }
+      }
+      const stores = [...latestByStore.values()].sort((a, b) => a.unitPrice - b.unitPrice);
+      const cheapest = stores[0];
+      if (!cheapest) continue;
+      const last = acc.history[acc.history.length - 1];
+      const prev = acc.history.length > 1 ? acc.history[acc.history.length - 2] : null;
+      watches.push({
+        key: acc.key,
+        productId: acc.productId,
+        name: acc.name,
+        currency: acc.currency,
+        cheapestStore: cheapest.store,
+        cheapestUnit: cheapest.unitPrice,
+        lastUnit: last.unitPrice,
+        prevUnit: prev ? prev.unitPrice : null,
+        changePct:
+          prev && prev.unitPrice
+            ? ((last.unitPrice - prev.unitPrice) / prev.unitPrice) * 100
+            : null,
+        stores,
+        history: acc.history.slice(-16),
+      });
+    }
+    return watches.sort((a, b) => a.name.localeCompare(b.name));
+  },
+);
+
+export const getPromptPack = createServerFn({ method: "GET" }).handler(
+  async (): Promise<PromptPack & { knownShops: string[] }> => {
+    const pack = await loadPromptPack();
+    const sql = await getSql();
+    const stores = await sql<{ store_name: string }>`
+      select distinct store_name from trips
+       where store_name is not null and trim(store_name) <> ''
+       order by store_name
+    `;
+    const names = stores.map((s) => s.store_name.trim());
+    pack.aliases = suggestAliases(names, pack);
+    const known = new Set([...Object.keys(pack.shops), ...names]);
+    for (const name of known) {
+      const canon = resolveShopKey(name, pack);
+      if (canon && canon !== name && pack.shops[canon] != null) {
+        pack.aliases[name] = canon;
+        continue;
+      }
+      if (pack.shops[name] == null) pack.shops[name] = "";
+    }
+    return { ...pack, knownShops: [...known].sort((a, b) => a.localeCompare(b)) };
+  },
+);
+
+export const savePromptPack = createServerFn({ method: "POST" })
+  .validator((input: PromptPack) => input)
+  .handler(async ({ data }): Promise<PromptPack> => persistPromptPack(data));
+
+export const resetPromptPack = createServerFn({ method: "POST" }).handler(async (): Promise<PromptPack> => {
+  return persistPromptPack({ ...DEFAULT_PROMPTS, shops: {} });
+});
+
+export const draftShopNotes = createServerFn({ method: "POST" })
+  .validator((storeName: string) => storeName)
+  .handler(async ({ data: storeName }): Promise<{ notes: string }> => {
+    const name = storeName.trim();
+    if (!name) throw new Error("Store name required");
+    const pack = await loadPromptPack();
+    const sql = await getSql();
+    const shots = await sql<{ id: number; kind: string; store_name: string | null }>`
+      select s.id, s.kind, t.store_name
+        from scan_shots s
+        join trips t on t.id = s.trip_id
+       order by s.id desc
+       limit 120
+    `;
+    const canon = resolveShopKey(name, pack);
+    const shot =
+      shots.find(
+        (s) => s.kind === "receipt" && resolveShopKey(s.store_name, pack) === canon,
+      ) ??
+      shots.find((s) => s.kind === "label" && resolveShopKey(s.store_name, pack) === canon);
+    let image: string | null = null;
+    if (shot) {
+      const loaded = await getShotImage({ data: shot.id });
+      image = loaded.image;
+    }
+    const extracts = await sql<{ extracted_json: unknown }>`
+      select extracted_json from receipt_captures r
+      join trips t on t.id = r.trip_id
+     where t.store_name is not null
+       and r.extracted_json is not null
+     order by r.id desc
+     limit 20
+    `;
+    const extracted =
+      extracts.find((row) => {
+        const text = typeof row.extracted_json === "string" ? row.extracted_json : JSON.stringify(row.extracted_json);
+        return resolveShopKey(name, pack) === canon && text.includes(name.slice(0, 8));
+      }) ?? extracts[0];
+    const { resolveEndpoint } = await import("./llm");
+    const task = image ? "vision" : "text";
+    const endpoint = await resolveEndpoint("byok", task);
+    const instruction = `Write short extra instructions (max 120 words) for reading ${name} grocery labels and till tape.
+These notes are APPENDED to a global prompt. Do not repeat generic OCR rules.
+Cover till abbreviations, VAT/total line wording, Arabic+English mix, and sticker quirks for this chain.
+Return JSON: { "notes": "..." }`;
+    const content: unknown[] = image
+      ? [
+          { type: "image_url", image_url: { url: image, detail: "low" } },
+          {
+            type: "text",
+            text: `${instruction}\n\nUse the photo. Last extract if useful:\n${JSON.stringify(extracted?.extracted_json ?? null).slice(0, 2500)}`,
+          },
+        ]
+      : `${instruction}\n\nLAST RECEIPT EXTRACT:\n${JSON.stringify(extracted?.extracted_json ?? null).slice(0, 4000)}`;
+    const res = await fetch(endpoint.url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(endpoint.apiKey ? { Authorization: `Bearer ${endpoint.apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model: endpoint.model,
+        temperature: 0,
+        max_tokens: 400,
+        messages: [{ role: "user", content }],
+      }),
+      signal: AbortSignal.timeout(endpoint.timeoutMs),
+    });
+    if (!res.ok) throw new Error(`Model ${res.status}`);
+    const json = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+    const text = json.choices?.[0]?.message?.content ?? "";
+    const match = text.match(/\{[\s\S]*\}/);
+    let notes = "";
+    if (match) {
+      try {
+        notes = String((JSON.parse(match[0]) as { notes?: string }).notes ?? "").trim();
+      } catch {
+        notes = "";
+      }
+    }
+    if (!notes) notes = text.trim().slice(0, 800);
+    if (!notes) throw new Error("The model returned empty notes.");
+    return { notes };
+  });
+
+export const testLastShot = createServerFn({ method: "POST" })
+  .validator(
+    (input: {
+      kind: "label" | "receipt";
+      storeName?: string | null;
+      promptOverride?: string | null;
+    }) => input,
+  )
+  .handler(
+    async ({
+      data,
+    }): Promise<{ shotId: number; storeName: string | null; result: unknown }> => {
+      const pack = await loadPromptPack();
+      const sql = await getSql();
+      const rows = await sql<{ id: number; kind: string; store_name: string | null }>`
+        select s.id, s.kind, t.store_name
+          from scan_shots s
+          join trips t on t.id = s.trip_id
+         where s.kind = ${data.kind}
+         order by s.id desc
+         limit 80
+      `;
+      const want = data.storeName ? resolveShopKey(data.storeName, pack) : null;
+      const row =
+        (want
+          ? rows.find((r) => resolveShopKey(r.store_name, pack) === want)
+          : rows[0]) ?? rows[0];
+      if (!row) throw new Error("No photo of that type yet.");
+      const { image } = await getShotImage({ data: row.id });
+      const assembled = data.promptOverride?.trim()
+        ? data.promptOverride.trim()
+        : withShopNote(data.kind === "receipt" ? pack.receipt : pack.label, pack, row.store_name);
+      if (data.kind === "receipt") {
+        const { readReceiptImage } = await import("./vision");
+        const result = await readReceiptImage(image, {
+          provider: "byok",
+          storeName: row.store_name,
+          promptOverride: assembled,
+        });
+        return { shotId: row.id, storeName: row.store_name, result };
+      }
+      const { readLabelImage } = await import("./vision");
+      const result = await readLabelImage(image, {
+        provider: "byok",
+        storeName: row.store_name,
+        promptOverride: assembled,
+      });
+      return { shotId: row.id, storeName: row.store_name, result };
+    },
+  );
+
+export const fixProduceKey = createServerFn({ method: "POST" })
+  .validator((input: { key: string; newName: string }) => input)
+  .handler(async ({ data }): Promise<{ name: string; productId: number }> => {
+    const newName = data.newName.trim();
+    if (!newName) throw new Error("Type the stats name to use");
+    const sql = await getSql();
+    const existing = await sql<{ id: number }>`
+      select id from products where lower(name) = lower(${newName}) limit 1
+    `;
+    let productId = existing[0] ? Number(existing[0].id) : 0;
+    if (!productId) {
+      const created = await sql<{ id: number }>`
+        insert into products (name) values (${newName}) returning id
+      `;
+      productId = Number(created[0]?.id ?? 0);
+    }
+    if (!productId) throw new Error("Could not save the stats name");
+    const key = catalogKey(newName);
+    await sql`
+      insert into product_aliases (product_id, alias_key, source)
+      values (${productId}, ${key}, 'manual')
+      on conflict (alias_key) do update set product_id = excluded.product_id, source = 'manual'
+    `;
+    if (data.key.startsWith("p:")) {
+      const oldId = Number(data.key.slice(2));
+      if (oldId && oldId !== productId) {
+        await sql`update trip_items set product_id = ${productId} where product_id = ${oldId}`;
+        await sql`update price_observations set product_id = ${productId} where product_id = ${oldId}`;
+      }
+    } else if (data.key.startsWith("n:")) {
+      const nk = data.key.slice(2);
+      await sql`update price_observations set product_id = ${productId} where name_key = ${nk}`;
+      const names = await sql<{ name: string }>`
+        select distinct name from price_observations where name_key = ${nk}
+      `;
+      for (const row of names) {
+        await sql`
+          update trip_items set product_id = ${productId}
+           where product_id is null and lower(name) = lower(${row.name})
+        `;
+      }
+    }
+    return { name: newName, productId };
+  });
+
+

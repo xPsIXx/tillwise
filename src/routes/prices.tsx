@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { listPriceHistory, listRememberedProducts } from "@/lib/grocery/server";
@@ -29,6 +29,7 @@ function PricesPage() {
       <h1 className="mt-2 font-display text-4xl tracking-tight">Prices</h1>
       <p className="mt-2 max-w-xl text-sm text-muted">
         Barcodes and names remembered from filed trips. Open one to see what you paid last time.
+        Or <Link to="/search" className="underline-offset-2 hover:underline">search every trip</Link>.
       </p>
       {products.isLoading ? (
         <Skeleton className="mt-6 h-40 w-full" />

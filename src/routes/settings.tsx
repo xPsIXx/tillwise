@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { Link, createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { loadPpocr, ppocrReady } from "@/lib/grocery/ppocr";
 import {
-  COLLATE_OPTIONS,
   PPOCR_FEEL,
   PPOCR_SIZES,
   READ_OPTIONS,
@@ -15,7 +14,7 @@ import {
   type ScanSettings,
   type VisionDetail,
 } from "@/lib/grocery/settings";
-import { getLlmConfig, inspectLedger, listLlmModels, listTrips, repairLedger, saveLlmConfig, troubleshootTrip } from "@/lib/grocery/server";
+import { getLlmConfig, inspectLedger, listLlmModels, listTrips, repairLedger, saveLlmConfig, troubleshootTrip, exportLedger } from "@/lib/grocery/server";
 import { statusLabel, tripDate } from "@/lib/grocery/format";
 import { type EngineProgress } from "@/lib/grocery/tfjs";
 import { cn } from "@/lib/utils";
@@ -165,12 +164,8 @@ function SettingsPage() {
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not save"),
   });
 
-  const showLlmForm = settings.read === "local" || settings.collate === "local";
-  const showByokForm =
-    settings.read === "byok" ||
-    settings.read === "grok" ||
-    settings.collate === "byok" ||
-    settings.collate === "grok";
+  const showLlmForm = false;
+  const showByokForm = true;
   const showVisionDetail = showLlmForm || showByokForm;
 
   return (
@@ -178,8 +173,8 @@ function SettingsPage() {
       <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted">Scanner</p>
       <h1 className="mt-2 font-display text-4xl tracking-tight">Settings</h1>
       <p className="mt-3 max-w-lg text-sm text-muted">
-        Detect on the phone, then snap. Reading and collation use the engine you pick — on-device,
-        your local server, or a BYOK API.
+        Detect on the phone, then snap. Labels use PP-OCR or BYOK. Collate, receipts, and debug
+        use the BYOK text model.
       </p>
 
       {engine && (
@@ -214,47 +209,9 @@ function SettingsPage() {
       )}
 
       <section className="mt-8">
-        <h2 className="font-display text-2xl">PP-OCR model size</h2>
-        <p className="mt-1 text-sm text-muted">
-          Used after you tap the shutter. Finds text on the photo and reads it. Nothing watches
-          the live camera.
-        </p>
-        <div className="mt-4 grid gap-2">
-          {PPOCR_SIZES.map((opt) => (
-            <Choice
-              key={`det-${opt.id}`}
-              title={opt.title}
-              body={opt.body}
-              selected={settings.ppocrDetSize === opt.id}
-              onSelect={() => patch({ ppocrDetSize: opt.id, ppocrRecSize: opt.id })}
-            />
-          ))}
-        </div>
-      </section>
-
-      <section className="mt-8">
-          <h2 className="font-display text-2xl">PP-OCR sensitivity</h2>
-          <p className="mt-1 text-sm text-muted">
-            Loose keeps small produce-sticker text. Strict ignores faint or busy background type.
-          </p>
-          <div className="mt-4 grid gap-2">
-            {PPOCR_FEEL.map((opt) => (
-              <Choice
-                key={opt.id}
-                title={opt.title}
-                body={opt.body}
-                selected={settings.ppocrFeel === opt.id}
-                onSelect={() => patch({ ppocrFeel: opt.id })}
-              />
-            ))}
-          </div>
-        </section>
-
-      <section className="mt-10">
         <h2 className="font-display text-2xl">How to read it</h2>
         <p className="mt-1 text-sm text-muted">
-          Labels use this reader. Till tape always needs BYOK vision — PP-OCR
-          is a label engine, not a receipt layout model.
+          Labels use this reader. Till tape, collate, and debug always use the BYOK models below.
         </p>
         <div className="mt-4 grid gap-2">
           {READ_OPTIONS.map((opt) => (
@@ -268,28 +225,6 @@ function SettingsPage() {
               }
               selected={settings.read === opt.id}
               onSelect={() => patch({ read: opt.id })}
-            />
-          ))}
-        </div>
-      </section>
-
-      <section className="mt-10">
-        <h2 className="font-display text-2xl">Collation</h2>
-        <p className="mt-1 text-sm text-muted">
-          After the trip, this model groups aisle names with till abbreviations.
-        </p>
-        <div className="mt-4 grid gap-2">
-          {COLLATE_OPTIONS.map((opt) => (
-            <Choice
-              key={opt.id}
-              title={opt.title}
-              body={
-                opt.id === "local" && cfg && !cfg.textModel && !cfg.visionModel
-                  ? `${opt.body} Set TEXT_MODEL (falls back to VISION_MODEL).`
-                  : opt.body
-              }
-              selected={settings.collate === opt.id}
-              onSelect={() => patch({ collate: opt.id })}
             />
           ))}
         </div>
@@ -441,6 +376,9 @@ function SettingsPage() {
               </Button>
             )}
           </form>
+          <Button asChild variant="secondary" className="mt-4">
+            <Link to="/prompts">Edit model prompts</Link>
+          </Button>
         </section>
       )}
 
@@ -468,23 +406,61 @@ function SettingsPage() {
         </section>
       )}
 
-      <section className="mt-10">
-        <h2 className="font-display text-2xl">After the snap</h2>
-        <div className="mt-4 grid gap-2">
+      <details className="mt-10">
+        <summary className="cursor-pointer font-display text-2xl">Reading options</summary>
+        <p className="mt-2 text-sm text-muted">
+          PP-OCR size and feel, and whether a snap goes straight to the cart.
+        </p>
+        <h3 className="mt-6 text-sm font-medium">PP-OCR model size</h3>
+        <div className="mt-3 grid gap-2">
+          {PPOCR_SIZES.map((opt) => (
+            <Choice
+              key={`det-${opt.id}`}
+              title={opt.title}
+              body={opt.body}
+              selected={settings.ppocrDetSize === opt.id}
+              onSelect={() => patch({ ppocrDetSize: opt.id, ppocrRecSize: opt.id })}
+            />
+          ))}
+        </div>
+        <h3 className="mt-6 text-sm font-medium">PP-OCR sensitivity</h3>
+        <div className="mt-3 grid gap-2">
+          {PPOCR_FEEL.map((opt) => (
+            <Choice
+              key={opt.id}
+              title={opt.title}
+              body={opt.body}
+              selected={settings.ppocrFeel === opt.id}
+              onSelect={() => patch({ ppocrFeel: opt.id })}
+            />
+          ))}
+        </div>
+        <h3 className="mt-6 text-sm font-medium">After the snap</h3>
+        <div className="mt-3 grid gap-2">
           <Choice
             title="Add to cart, fill in later"
-            body="Default. The photo joins the cart as “Reading…”. PP-OCR, local vision, and BYOK all keep working in the background and patch the row when they finish. Local vision and BYOK never show a confirm sheet."
+            body="Default. The photo joins the cart as “Reading…”. The reader patches the row when it finishes."
             selected={settings.autoAdd}
             onSelect={() => patch({ autoAdd: true })}
           />
           <Choice
             title="Hold for a look"
-            body="Only for on-device readers (PP-OCR / browser text). You confirm the extract before it joins the cart. Local vision and BYOK still skip this sheet."
+            body="Only for PP-OCR. You confirm the extract before it joins the cart. BYOK still skips this sheet."
             selected={!settings.autoAdd}
             onSelect={() => patch({ autoAdd: false })}
           />
         </div>
-      </section>
+        <dl className="mt-6 space-y-3 text-sm">
+          <Row
+            k="PP-OCRv6"
+            v="On this phone. Enabling it downloads det + rec from Hugging Face (~30 MB), then caches them."
+          />
+          <Row
+            k="BYOK"
+            v="Your key, your endpoint. OpenAI-compatible /v1/chat/completions. Saved here or BYOK_BASE_URL / BYOK_API_KEY / BYOK_VISION_MODEL / BYOK_TEXT_MODEL."
+          />
+        </dl>
+      </details>
 
       <section className="mt-10">
         <h2 className="font-display text-2xl">Debug</h2>
@@ -497,27 +473,7 @@ function SettingsPage() {
         <DebugReports />
       </section>
 
-      <section className="mt-10 rounded-2xl bg-surface p-5 shadow-[var(--shadow-border)]">
-        <h2 className="font-display text-2xl">What this uses</h2>
-        <dl className="mt-4 space-y-3 text-sm">
-          <Row
-            k="TensorFlow.js"
-            v="On this phone. tfjs 4.20 from jsDelivr + MobileNet v1 0.25 224 from Google. CDN, cached after first load."
-          />
-          <Row
-            k="PP-OCRv6"
-            v="On this phone. Enabling it downloads det + rec from Hugging Face through this app (~30 MB), then caches them. The engine itself is same-origin WASM — no jsDelivr hang. Drop tars in public/models/ to skip the Hugging Face step."
-          />
-          <Row
-            k="Local LLM"
-            v="Your OpenAI-compatible server. VISION_MODEL reads photos; TEXT_MODEL collates names. URL never hard-coded — env wins, then this form."
-          />
-          <Row
-            k="BYOK"
-            v="Your key, your endpoint. OpenAI-compatible /v1/chat/completions. Saved in Settings or BYOK_BASE_URL / BYOK_API_KEY / BYOK_VISION_MODEL / BYOK_TEXT_MODEL."
-          />
-        </dl>
-      </section>
+      <ExportPanel />
 
       <LedgerPanel />
     </main>
@@ -546,13 +502,16 @@ function DebugReports() {
       if (tripId == null) throw new Error("No trip to debug");
       const settings = loadScanSettings();
       return troubleshootTrip({
-        data: { tripId, scope, provider: settings.collate, settings },
+        data: { tripId, scope, provider: "byok", settings },
       });
     },
     onSuccess: (res) => {
       setDiagnosis(res.diagnosis);
       setReport(res.report);
-      toast.success("Report ready — copy it and paste into the Tillwise chat.");
+      toast.success("The write-up is below. Copy it and paste it into the Tillwise chat.");
+      window.setTimeout(() => {
+        document.getElementById("debug-opinion")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 50);
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not ask the model"),
   });
@@ -560,8 +519,9 @@ function DebugReports() {
   return (
     <div className="mt-6 rounded-2xl bg-surface p-5 shadow-[var(--shadow-border)]">
       <p className="text-sm text-muted">
-        Builds a text report. Use Copy, or tap the box and copy it yourself. Nothing is sent to
-        Grok until you paste it there.
+        Same page, no extra debug screen. Tap a button, wait (up to 10 minutes), then the model’s
+        write-up appears in the box below. Copy that text and paste it into this Grok chat so I
+        can see what went wrong. The raw JSON is optional.
       </p>
       {trips.length > 0 ? (
         <label className="mt-4 block text-sm">
@@ -588,7 +548,7 @@ function DebugReports() {
           disabled={help.isPending || tripId == null}
           onClick={() => help.mutate("trip")}
         >
-          {help.isPending && help.variables !== "full" ? "Sending…" : "Debug this trip"}
+          {help.isPending && help.variables !== "full" ? "Waiting (up to 10 min)…" : "Debug this trip"}
         </Button>
         <Button
           type="button"
@@ -596,40 +556,55 @@ function DebugReports() {
           disabled={help.isPending || tripId == null}
           onClick={() => help.mutate("full")}
         >
-          {help.isPending && help.variables === "full" ? "Sending…" : "Full debug"}
+          {help.isPending && help.variables === "full" ? "Waiting (up to 10 min)…" : "Full debug"}
         </Button>
       </div>
       {(report || diagnosis) && (
-        <div className="mt-5">
-          <label className="block text-sm text-muted" htmlFor="debug-report">
-            Debug report
-          </label>
+        <div id="debug-opinion" className="mt-5">
+          <h3 className="font-display text-xl">Model write-up</h3>
+          <p className="mt-1 text-sm text-muted">
+            This is the model’s opinion. Copy it, then paste it into the Tillwise Grok chat.
+          </p>
           <textarea
             id="debug-report"
             ref={copyBox}
             readOnly
-            className="mt-1 h-64 w-full rounded-md border border-border bg-bg p-3 font-mono text-xs leading-relaxed"
-            value={report ?? diagnosis ?? ""}
+            className="mt-3 h-80 w-full rounded-md border border-border bg-bg p-3 text-sm leading-relaxed"
+            value={diagnosis ?? report ?? ""}
             onFocus={(e) => e.currentTarget.select()}
           />
           <div className="mt-3 flex flex-wrap gap-2">
             <Button
               type="button"
               onClick={() => {
-                const text = report ?? diagnosis ?? "";
+                const text = diagnosis ?? report ?? "";
                 const box = copyBox.current;
                 if (box) {
                   box.focus();
                   box.select();
                 }
                 void navigator.clipboard.writeText(text).then(
-                  () => toast.success("Copied to clipboard"),
+                  () => toast.success("Copied — paste it into the Tillwise chat"),
                   () => toast.error("Copy failed — select the text in the box and copy it"),
                 );
               }}
             >
-              Copy report
+              Copy write-up
             </Button>
+            {report && report !== diagnosis ? (
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  void navigator.clipboard.writeText(report).then(
+                    () => toast.success("Copied write-up plus snapshot JSON"),
+                    () => toast.error("Copy failed"),
+                  );
+                }}
+              >
+                Copy with snapshot
+              </Button>
+            ) : null}
             <Button
               type="button"
               variant="ghost"
@@ -641,6 +616,16 @@ function DebugReports() {
               Dismiss
             </Button>
           </div>
+          {report && report !== diagnosis ? (
+            <details className="mt-4">
+              <summary className="cursor-pointer text-sm text-muted">Raw snapshot JSON</summary>
+              <textarea
+                readOnly
+                className="mt-2 h-40 w-full rounded-md border border-border bg-bg p-3 font-mono text-xs"
+                value={report}
+              />
+            </details>
+          ) : null}
         </div>
       )}
     </div>
@@ -651,6 +636,109 @@ function formatBytes(n: number) {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${Math.round((n / 1024) * 10) / 10} KB`;
   return `${Math.round((n / (1024 * 1024)) * 10) / 10} MB`;
+}
+
+function downloadText(filename: string, text: string, mime: string) {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function csvCell(v: string | number | null | undefined) {
+  const s = v == null ? "" : String(v);
+  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function ExportPanel() {
+  const dump = useMutation({
+    mutationFn: () => exportLedger(),
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not export"),
+  });
+
+  function asJson() {
+    dump.mutate(undefined, {
+      onSuccess: (data) => {
+        downloadText(
+          `tillwise-${data.exportedAt.slice(0, 10)}.json`,
+          JSON.stringify(data, null, 2),
+          "application/json",
+        );
+        toast.success("JSON downloaded — no photos");
+      },
+    });
+  }
+
+  function asCsv() {
+    dump.mutate(undefined, {
+      onSuccess: (data) => {
+        const header = [
+          "trip_id",
+          "date",
+          "store",
+          "status",
+          "name",
+          "brand",
+          "barcode",
+          "qty",
+          "weight",
+          "weight_unit",
+          "unit_price",
+          "line_price",
+          "match",
+          "till_name",
+          "currency",
+        ];
+        const rows = [header.join(",")];
+        for (const trip of data.trips) {
+          for (const item of trip.items) {
+            rows.push(
+              [
+                trip.id,
+                csvCell(trip.startedAt),
+                csvCell(trip.storeName),
+                csvCell(trip.status),
+                csvCell(item.name),
+                csvCell(item.brand),
+                csvCell(item.barcode),
+                item.quantity ?? "",
+                item.weightValue ?? "",
+                csvCell(item.weightUnit),
+                item.unitPrice ?? "",
+                item.linePrice ?? "",
+                csvCell(item.matchStatus),
+                csvCell(item.tillName),
+                csvCell(trip.currency),
+              ].join(","),
+            );
+          }
+        }
+        downloadText(`tillwise-${data.exportedAt.slice(0, 10)}.csv`, rows.join("\n"), "text/csv");
+        toast.success("CSV downloaded — no photos");
+      },
+    });
+  }
+
+  return (
+    <section className="mt-10 rounded-2xl bg-surface p-5 shadow-[var(--shadow-border)]">
+      <h2 className="font-display text-2xl">Export</h2>
+      <p className="mt-1 text-sm text-muted">
+        Trips and lines only. Photos stay on the share. Keep a copy off the server.
+      </p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button type="button" onClick={asJson} disabled={dump.isPending}>
+          {dump.isPending ? "Preparing…" : "Download JSON"}
+        </Button>
+        <Button type="button" variant="secondary" onClick={asCsv} disabled={dump.isPending}>
+          Download CSV
+        </Button>
+      </div>
+    </section>
+  );
 }
 
 function LedgerPanel() {
