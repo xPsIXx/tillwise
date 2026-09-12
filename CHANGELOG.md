@@ -2,6 +2,11 @@
 
 All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
+## 0.3.15 — 2026-09-12
+
+- Unread photos show a banner and **Continue reading** — they do not start by themselves.
+- On the collate sheet and on the trip, tap a label-only line then a till-only line to pair them by hand.
+
 ## 0.3.14 — 2026-09-06
 
 - Collate shows a confirm sheet (label ↔ till, leftovers, printed total vs line sum) and does not write until Confirm. Cart keeps one row per label; photos keep their item ids. Matched lines show the till name and can be unmatched. Unmatched sit in their own list. File trip asks once if leftovers remain.

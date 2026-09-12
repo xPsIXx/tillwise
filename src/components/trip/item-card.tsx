@@ -21,6 +21,7 @@ export function ItemCard({
   onReprocess,
   onMatch,
   onUnmatch,
+  onPair,
 }: {
   item: TripItem;
   currency: string;
@@ -29,6 +30,7 @@ export function ItemCard({
   onReprocess?: (item: TripItem) => void;
   onMatch?: (item: TripItem) => void;
   onUnmatch?: (item: TripItem) => void;
+  onPair?: (item: TripItem) => void;
 }) {
   const match = MATCH[item.matchStatus] ?? MATCH.unmatched;
   const reading = item.matchStatus === "processing";
@@ -100,8 +102,19 @@ export function ItemCard({
         {!reading && item.quantity != null && item.quantity !== 1 ? (
           <p className="mt-1 text-[11px] text-subtle">{qty(item.quantity, item.quantityUnit)}</p>
         ) : null}
-        {(onEdit || onDelete || onReprocess || onMatch || onUnmatch) && !reading && (
+        {(onEdit || onDelete || onReprocess || onMatch || onUnmatch || onPair) && !reading && (
           <div className="mt-2 flex flex-wrap justify-end gap-1">
+            {onPair && (item.matchStatus === "label_only" || item.matchStatus === "unmatched") && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-9 px-2 text-muted"
+                onClick={() => onPair(item)}
+              >
+                Pair with till line
+              </Button>
+            )}
             {onUnmatch && item.matchStatus === "matched" && (
               <Button
                 type="button"

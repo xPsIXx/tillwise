@@ -19,25 +19,21 @@ import {
   blobToDataUrl,
   captureCanvas,
   cropVideo,
-  imageToCanvas,
   LABEL_CAPTURE,
   LABEL_VIEWFINDER,
-  loadImage,
   makeThumbnail,
   publicImageToDataUrl,
   RECEIPT_CAPTURE,
 } from "@/lib/grocery/image";
-import { extractionConfidence, extractionIsThin, readLabelOnDevice } from "@/lib/grocery/parse-local";
-import { loadPpocr, parsePpocrText, ppocrReady, runPpocr } from "@/lib/grocery/ppocr";
+import { loadPpocr, ppocrReady } from "@/lib/grocery/ppocr";
 import { SAMPLE_LABELS, SAMPLE_RECEIPTS } from "@/lib/grocery/sample-data";
-import { fillFromMemory } from "@/lib/grocery/catalog";
+import { enqueueScanJob, listScanJobs, onScanQueueSaved, setScanConfirmHandler, subscribeScanQueue, type ScanJob } from "@/lib/grocery/scan-queue";
 import {
   READ_OPTIONS,
   effectiveRead,
   holdForLook,
   loadScanSettings,
   saveScanSettings,
-  visionProvider,
   type ScanSettings,
 } from "@/lib/grocery/settings";
 import { type EngineProgress } from "@/lib/grocery/tfjs";
@@ -46,11 +42,6 @@ import {
   addReceiptCapture,
   addScanShot,
   getLlmConfig,
-  lookupProduct,
-  scanLabelPhoto,
-  scanReceiptPhoto,
-  updateItem,
-  updateReceiptCapture,
   updateScanShot,
 } from "@/lib/grocery/server";
 import type { LabelExtraction, ReceiptExtraction, ScanMode } from "@/lib/grocery/types";
@@ -61,32 +52,7 @@ type Pending =
   | { kind: "label"; image: string; data: LabelExtraction; itemId?: number; shotId?: number }
   | { kind: "receipt"; image: string; data: ReceiptExtraction; captureId?: number; shotId?: number };
 
-type Job = {
-  id: string;
-  mode: ScanMode;
-  image: string;
-  barcode: string | null;
-  status: "queued" | "reading" | "done" | "error";
-  itemId?: number;
-  captureId?: number;
-  shotId?: number;
-  error?: string;
-  confidence?: number | null;
-};
-
-type JobBag = {
-  jobs: Job[];
-  running: number;
-  claimed: Set<string>;
-};
-
-function jobBag(): JobBag {
-  const g = globalThis as typeof globalThis & { __tillwiseScanJobs?: JobBag };
-  if (!g.__tillwiseScanJobs) {
-    g.__tillwiseScanJobs = { jobs: [], running: 0, claimed: new Set() };
-  }
-  return g.__tillwiseScanJobs;
-}
+type Job = ScanJob;
 
 const PLACEHOLDER_LABEL: LabelExtraction = {
   name: "Reading label…",
@@ -275,7 +241,7 @@ export function CameraView({
   const [torch, setTorch] = useState(false);
   const [hint, setHint] = useState("Frame a label");
   const [flash, setFlash] = useState(false);
-  const [jobs, setJobs] = useState<Job[]>(() => [...jobBag().jobs]);
+  const [jobs, setJobs] = useState<Job[]>(() => listScanJobs());
   const [pending, setPending] = useState<Pending | null>(null);
   const [saving, setSaving] = useState(false);
   const [engine, setEngine] = useState<EngineProgress | null>(null);
@@ -426,172 +392,34 @@ export function CameraView({
     };
   }, [camera]);
 
-  const publishJobs = () => setJobs([...jobBag().jobs]);
-
-  async function runJob(job: Job) {
-    job.status = "reading";
-    publishJobs();
-    const cfg = loadScanSettings();
-    settingsRef.current = cfg;
-    try {
-      if (job.mode === "label") {
-        let data: LabelExtraction | null = null;
-        const read = effectiveRead(cfg);
-        if (read === "ppocr") {
-          const ok = ppocrReady() || (await loadPpocr());
-          if (!ok) throw new Error("PP-OCRv6 did not load");
-          const img = await loadImage(job.image);
-          const canvas = imageToCanvas(img, 1280);
-          const hit = await runPpocr(canvas, undefined, { reticle: false, feel: cfg.ppocrFeel });
-          data = parsePpocrText(hit.text, job.barcode);
-          if (extractionIsThin(data) && !hit.text && !job.barcode) {
-            throw new Error("PP-OCR found no product text");
-          }
-        } else if (read === "device") {
-          const img = await loadImage(job.image);
-          data = await readLabelOnDevice(img, job.barcode);
-        } else {
-          const result = await scanLabelPhoto({
-            data: {
-              imageDataUrl: job.image,
-              barcodeHint: job.barcode,
-              detail: cfg.visionDetail,
-              provider: read === "byok" || read === "grok" ? "byok" : "local",
-            },
-          });
-          if (!result.ok) throw new Error(result.error);
-          data = result.data;
-          if (job.barcode && !data.barcode) data.barcode = job.barcode;
-        }
-        if (!data) throw new Error("Nothing readable on this photo");
-        const mem = await lookupProduct({
-          data: { barcode: data.barcode ?? job.barcode, name: data.name },
-        }).catch(() => null);
-        if (mem) data = fillFromMemory(data, mem);
-        if (job.itemId) {
-          await updateItem({
-            data: {
-              itemId: job.itemId,
-              patch: {
-                name: data.name,
-                brand: data.brand,
-                description: data.description,
-                barcode: data.barcode,
-                category: data.category,
-                quantity: data.quantity,
-                quantityUnit: data.quantityUnit,
-                weightValue: data.weightValue,
-                weightUnit: data.weightUnit,
-                unitPrice: data.unitPrice,
-                linePrice: data.linePrice,
-                matchStatus: "unmatched",
-                matchConfidence: extractionConfidence(data),
-                rawText: data.rawText,
-              },
-            },
-          });
-          if (job.shotId) {
-            await updateScanShot({
-              data: {
-                shotId: job.shotId,
-                lastRead: data,
-                itemId: job.itemId,
-                barcode: data.barcode,
-              },
-            }).catch(() => undefined);
-          }
-          job.confidence = extractionConfidence(data);
-          toast.success(`Added ${data.name}`);
-          onSaved();
-        } else {
-          job.confidence = extractionConfidence(data);
-          setPending({ kind: "label", image: job.image, data, shotId: job.shotId });
-        }
-      } else {
-        const result = await scanReceiptPhoto({
-          data: {
-            imageDataUrl: job.image,
-            detail: cfg.visionDetail,
-            provider: visionProvider(cfg),
-          },
-        });
-        if (!result.ok) throw new Error(result.error);
-        if (job.captureId) {
-          await updateReceiptCapture({
-            data: { captureId: job.captureId, extracted: result.data },
-          });
-          if (job.shotId) {
-            await updateScanShot({
-              data: { shotId: job.shotId, lastRead: result.data, captureId: job.captureId },
-            }).catch(() => undefined);
-          }
-          toast.success("Receipt portion read");
-          onSaved();
-        } else {
-          setPending({ kind: "receipt", image: job.image, data: result.data, shotId: job.shotId });
-        }
+  useEffect(() => {
+    const offJobs = subscribeScanQueue(() => setJobs(listScanJobs()));
+    const offSaved = onScanQueueSaved(() => onSaved());
+    setScanConfirmHandler((job, data) => {
+      if (job.mode === "label" && "name" in data) {
+        setPending({ kind: "label", image: job.image, data, shotId: job.shotId });
+      } else if (job.mode === "receipt" && "items" in data) {
+        setPending({ kind: "receipt", image: job.image, data, shotId: job.shotId });
       }
-      job.status = "done";
-    } catch (err) {
-      job.status = "error";
-      job.error = err instanceof Error ? err.message : "Could not read that photo";
-      toast.error(job.error);
-      if (job.shotId) {
-        await updateScanShot({
-          data: {
-            shotId: job.shotId,
-            lastRead:
-              job.mode === "label"
-                ? { ...PLACEHOLDER_LABEL, name: "Couldn't read", rawText: job.error }
-                : { ...emptyReceipt(), rawText: job.error },
-          },
-        }).catch(() => undefined);
-      }
-      if (job.itemId) {
-        await updateItem({
-          data: {
-            itemId: job.itemId,
-            patch: { name: "Couldn't read", matchStatus: "unmatched", matchConfidence: 0 },
-          },
-        }).catch(() => undefined);
-        onSaved();
-      }
-    } finally {
-      publishJobs();
-      window.setTimeout(() => {
-        const bag = jobBag();
-        bag.jobs = bag.jobs.filter((j) => j.id !== job.id || (j.status !== "done" && j.status !== "error"));
-        publishJobs();
-      }, job.status === "error" ? 8000 : 2200);
-    }
-  }
-
-  async function drain() {
-    const bag = jobBag();
-    const cfg = loadScanSettings();
-    const maxParallel = cfg.read === "ppocr" || cfg.read === "device" ? 1 : 3;
-    while (bag.running < maxParallel) {
-      const next = bag.jobs.find((j) => j.status === "queued" && !bag.claimed.has(j.id));
-      if (!next) return;
-      bag.claimed.add(next.id);
-      next.status = "reading";
-      bag.running += 1;
-      publishJobs();
-      void runJob(next).finally(() => {
-        bag.running = Math.max(0, bag.running - 1);
-        bag.claimed.delete(next.id);
-        void drain();
-      });
-    }
-  }
+    });
+    return () => {
+      offJobs();
+      offSaved();
+      setScanConfirmHandler(null);
+    };
+  }, [onSaved]);
 
   async function enqueue(image: string, barcode: string | null, scanMode: ScanMode) {
     const cfg = loadScanSettings();
     settingsRef.current = cfg;
     const dataUrl = image.startsWith("data:") ? image : await publicImageToDataUrl(image);
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    const job: Job = { id, mode: scanMode, image: dataUrl, barcode, status: "queued" };
     const thumb = await makeThumbnail(dataUrl);
+    const job: Omit<Job, "id" | "status"> & { status: Job["status"] } = {
+      mode: scanMode,
+      image: dataUrl,
+      barcode,
+      status: "queued",
+    };
     if (!holdForLook(cfg)) {
       if (scanMode === "label") {
         const item = await addLabelItem({
@@ -627,9 +455,7 @@ export function CameraView({
     } catch (err) {
       console.error("[shot]", err);
     }
-    jobBag().jobs = [...jobBag().jobs, job];
-    publishJobs();
-    void drain();
+    enqueueScanJob(job);
   }
 
   async function captureNow(fromBlob?: Blob) {

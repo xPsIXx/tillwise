@@ -15,6 +15,7 @@ export function CollateSheet({
   busy: boolean;
 }) {
   const [rows, setRows] = useState<CollatePair[]>(preview.rows);
+  const [pick, setPick] = useState<CollatePair | null>(null);
 
   const matched = rows.filter((r) => r.labelItemId != null && r.receiptIndex != null);
   const labelOnly = rows.filter((r) => r.labelItemId != null && r.receiptIndex == null);
@@ -59,6 +60,27 @@ export function CollateSheet({
       },
     };
     setRows((prev) => [...prev.filter((r) => r !== row), label, till]);
+    setPick(null);
+  }
+
+  function pairHand(label: CollatePair, till: CollatePair) {
+    if (label.labelItemId == null || till.receiptIndex == null) return;
+    const merged: CollatePair = {
+      labelItemId: label.labelItemId,
+      receiptIndex: till.receiptIndex,
+      aisleName: label.aisleName,
+      tillName: till.tillName ?? till.aisleName,
+      item: {
+        ...label.item,
+        matchStatus: "matched",
+        matchConfidence: 1,
+        tillName: till.tillName ?? till.aisleName,
+        unitPrice: till.item.unitPrice ?? label.item.unitPrice,
+        linePrice: till.item.linePrice ?? label.item.linePrice,
+      },
+    };
+    setRows((prev) => [...prev.filter((r) => r !== label && r !== till), merged]);
+    setPick(null);
   }
 
   return (
@@ -115,9 +137,25 @@ export function CollateSheet({
         {labelOnly.length > 0 && (
           <section className="mt-5">
             <h4 className="text-sm font-medium">Label only · {labelOnly.length}</h4>
+            <p className="mt-1 text-xs text-muted">Tap a label, then a till line to pair them.</p>
             <ul className="mt-2 space-y-1 text-sm">
               {labelOnly.map((row) => (
-                <li key={`l-${row.labelItemId}`}>{row.aisleName}</li>
+                <li key={`l-${row.labelItemId}`}>
+                  <button
+                    type="button"
+                    className={
+                      pick?.labelItemId === row.labelItemId
+                        ? "w-full rounded-md bg-bg px-2 py-1 text-left font-medium"
+                        : "w-full rounded-md px-2 py-1 text-left"
+                    }
+                    onClick={() =>
+                      setPick((cur) => (cur?.labelItemId === row.labelItemId ? null : row))
+                    }
+                  >
+                    {row.aisleName}
+                    {pick?.labelItemId === row.labelItemId ? " · selected" : ""}
+                  </button>
+                </li>
               ))}
             </ul>
           </section>
@@ -128,10 +166,19 @@ export function CollateSheet({
             <ul className="mt-2 space-y-1 text-sm">
               {tillOnly.map((row, i) => (
                 <li key={`t-${row.receiptIndex}-${i}`}>
-                  {row.tillName}{" "}
-                  <span className="tabular-nums text-muted">
-                    {money(row.item.linePrice, preview.currency)}
-                  </span>
+                  <button
+                    type="button"
+                    className="w-full rounded-md px-2 py-1 text-left"
+                    onClick={() => {
+                      if (pick) pairHand(pick, row);
+                    }}
+                  >
+                    {row.tillName}{" "}
+                    <span className="tabular-nums text-muted">
+                      {money(row.item.linePrice, preview.currency)}
+                    </span>
+                    {pick ? " · tap to pair" : ""}
+                  </button>
                 </li>
               ))}
             </ul>

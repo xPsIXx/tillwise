@@ -936,6 +936,61 @@ export const unmatchItem = createServerFn({ method: "POST" })
     return next[0] ? mapItem(next[0]) : item;
   });
 
+export const pairItems = createServerFn({ method: "POST" })
+  .validator((input: { labelItemId: number; tillItemId: number }) => input)
+  .handler(async ({ data }): Promise<TripItem> => {
+    const sql = await getSql();
+    const loadOne = async (id: number) => {
+      const rows = await sql<ItemRow>`
+        select i.id, i.trip_id, i.source, i.name, i.brand, i.description, i.barcode, i.category,
+               i.quantity, i.quantity_unit, i.weight_value, i.weight_unit, i.unit_price, i.line_price,
+               i.currency, i.raw_text, i.thumbnail_data, i.match_status, i.match_confidence, i.till_name, i.created_at,
+               i.product_id, p.name as product_name
+          from trip_items i
+          left join products p on p.id = i.product_id
+         where i.id = ${id}
+         limit 1
+      `;
+      return rows[0] ? mapItem(rows[0]) : null;
+    };
+    const label = await loadOne(data.labelItemId);
+    const till = await loadOne(data.tillItemId);
+    if (!label || !till) throw new Error("Item not found");
+    if (label.tripId !== till.tripId) throw new Error("Those lines are not on the same trip");
+    if (till.matchStatus !== "receipt_only") throw new Error("Pick a till-only line");
+    await sql`
+      update trip_items
+         set source = 'merged',
+             match_status = 'matched',
+             match_confidence = 1,
+             till_name = ${till.tillName ?? till.name},
+             unit_price = coalesce(${till.unitPrice}, unit_price),
+             line_price = coalesce(${till.linePrice}, line_price),
+             currency = coalesce(${till.currency}, currency)
+       where id = ${label.id}
+    `;
+    await sql`delete from trip_items where id = ${till.id}`;
+    recordAction({
+      action: "pairItems",
+      ok: true,
+      tripId: label.tripId,
+      detail: `${label.name} ↔ ${till.name}`,
+    });
+    await checkpointLedger();
+    const next = await sql<ItemRow>`
+      select i.id, i.trip_id, i.source, i.name, i.brand, i.description, i.barcode, i.category,
+             i.quantity, i.quantity_unit, i.weight_value, i.weight_unit, i.unit_price, i.line_price,
+             i.currency, i.raw_text, i.thumbnail_data, i.match_status, i.match_confidence, i.till_name, i.created_at,
+             i.product_id, p.name as product_name
+        from trip_items i
+        left join products p on p.id = i.product_id
+       where i.id = ${label.id}
+       limit 1
+    `;
+    if (!next[0]) throw new Error("Item not found");
+    return mapItem(next[0]);
+  });
+
 async function insertMerged(
   sql: Awaited<ReturnType<typeof getSql>>,
   tripId: number,

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -21,6 +21,7 @@ import {
   getShotImage,
   getTrip,
   logAppEvent,
+  pairItems,
   previewCollate,
   reopenTrip,
   unmatchItem,
@@ -32,6 +33,7 @@ import {
 import { money, statusLabel, tripDate } from "@/lib/grocery/format";
 import { extractionConfidence } from "@/lib/grocery/parse-local";
 import { readLabelCapture, readLabelCaptureBatch, readReceiptCapture, readReceiptCaptureBatch } from "@/lib/grocery/read-capture";
+import { listScanJobs, onScanQueueSaved, resumeUnreadShots, shotNeedsRead, subscribeScanQueue } from "@/lib/grocery/scan-queue";
 import { loadScanSettings } from "@/lib/grocery/settings";
 import type { CollatePreview, LabelExtraction, ReceiptExtraction, ScanShot, TripItem } from "@/lib/grocery/types";
 
@@ -278,6 +280,8 @@ function TripPage() {
   const [preview, setPreview] = useState<CollatePreview | null>(null);
   const [confirmFile, setConfirmFile] = useState(false);
   const [showReread, setShowReread] = useState(false);
+  const [pairing, setPairing] = useState<TripItem | null>(null);
+  const [queueTick, setQueueTick] = useState(0);
 
   const detailQuery = useQuery({
     queryKey: ["trip", tripId],
@@ -289,6 +293,16 @@ function TripPage() {
     void qc.invalidateQueries({ queryKey: ["trip", tripId] });
     void qc.invalidateQueries({ queryKey: ["trips"] });
   };
+
+  useEffect(() => {
+    const offJobs = subscribeScanQueue(() => setQueueTick((n) => n + 1));
+    const offSaved = onScanQueueSaved(() => invalidate());
+    return () => {
+      offJobs();
+      offSaved();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tripId]);
 
   const collate = useMutation({
     mutationFn: () => previewCollate({ data: { tripId, provider: loadScanSettings().collate } }),
@@ -325,6 +339,25 @@ function TripPage() {
     mutationFn: (itemId: number) => unmatchItem({ data: { itemId } }),
     onSuccess: () => invalidate(),
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not unmatch"),
+  });
+
+  const joinPair = useMutation({
+    mutationFn: (input: { labelItemId: number; tillItemId: number }) => pairItems({ data: input }),
+    onSuccess: () => {
+      setPairing(null);
+      toast.success("Paired");
+      invalidate();
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not pair"),
+  });
+
+  const resumeRead = useMutation({
+    mutationFn: (shots: ScanShot[]) => resumeUnreadShots(shots),
+    onSuccess: (n) => {
+      toast.success(n ? `Reading ${n} photo${n === 1 ? "" : "s"}…` : "Nothing unread");
+      invalidate();
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not resume"),
   });
 
   const reopen = useMutation({
@@ -469,6 +502,9 @@ function TripPage() {
   const labelOnly = visible.filter((i) => i.matchStatus === "label_only");
   const tillOnly = visible.filter((i) => i.matchStatus === "receipt_only");
   const leftover = labelOnly.length + tillOnly.length;
+  const unreadShots = photos.filter(shotNeedsRead);
+  const liveJobs = listScanJobs().filter((j) => j.status === "queued" || j.status === "reading");
+  void queueTick;
   const lineSum = visible.reduce((acc, it) => acc + (it.linePrice ?? 0), 0);
   const printed = trip.receiptTotal;
   const gap =
@@ -515,6 +551,28 @@ function TripPage() {
         <p className="mt-3 rounded-xl bg-surface px-3 py-2 text-sm shadow-[var(--shadow-border)]">
           Lines are {money(Math.abs(gap), trip.currency)} {gap > 0 ? "over" : "under"} the printed
           till total ({money(printed, trip.currency)}). The printed total is kept.
+        </p>
+      ) : null}
+      {unreadShots.length > 0 && liveJobs.length === 0 ? (
+        <div className="mt-4 rounded-xl bg-surface px-3 py-3 text-sm shadow-[var(--shadow-border)]">
+          <p>
+            {unreadShots.length} photo{unreadShots.length === 1 ? "" : "s"} unread. Nothing is running
+            in the background.
+          </p>
+          <Button
+            type="button"
+            className="mt-3"
+            disabled={resumeRead.isPending}
+            onClick={() => resumeRead.mutate(unreadShots)}
+          >
+            {resumeRead.isPending ? "Starting…" : "Continue reading"}
+          </Button>
+        </div>
+      ) : null}
+      {liveJobs.length > 0 ? (
+        <p className="mt-4 text-sm text-muted">
+          Reading {liveJobs.filter((j) => j.status === "reading").length} of {liveJobs.length}… you can
+          keep using the app.
         </p>
       ) : null}
       {leftover > 0 ? (
@@ -757,6 +815,7 @@ function TripPage() {
                       onDelete={(it) => removeItem.mutate(it.id)}
                       onOpenShot={setOpenShot}
                       onUnmatch={(it) => splitMatch.mutate(it.id)}
+                      onPair={setPairing}
                     />
                   </li>
                 ))}
@@ -779,6 +838,7 @@ function TripPage() {
                             onEdit={setEditing}
                             onDelete={(it) => removeItem.mutate(it.id)}
                             onOpenShot={setOpenShot}
+                            onPair={setPairing}
                           />
                         </li>
                       ))}
@@ -799,6 +859,7 @@ function TripPage() {
                             onEdit={setEditing}
                             onDelete={(it) => removeItem.mutate(it.id)}
                             onOpenShot={setOpenShot}
+                            onPair={setPairing}
                           />
                         </li>
                       ))}
@@ -819,6 +880,7 @@ function TripPage() {
                       onEdit={setEditing}
                       onDelete={(it) => removeItem.mutate(it.id)}
                       onOpenShot={setOpenShot}
+                      onPair={setPairing}
                     />
                   </li>
                 ))}
@@ -938,6 +1000,46 @@ function TripPage() {
           }}
         />
       )}
+      {pairing && (
+        <div
+          className="fixed inset-0 z-40 grid place-items-end bg-bg/50 p-4 sm:place-items-center"
+          onClick={() => setPairing(null)}
+        >
+          <div
+            className="max-h-[80dvh] w-full max-w-md overflow-y-auto rounded-2xl bg-surface p-5 shadow-[var(--shadow-border)]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="font-display text-2xl">Pair with a till line</h3>
+            <p className="mt-1 text-sm text-muted">{pairing.name}</p>
+            {tillOnly.length === 0 ? (
+              <p className="mt-4 text-sm text-muted">No till-only lines on this trip.</p>
+            ) : (
+              <ul className="mt-4 space-y-2">
+                {tillOnly.map((it) => (
+                  <li key={it.id}>
+                    <button
+                      type="button"
+                      className="w-full rounded-xl bg-elevated px-3 py-2 text-left text-sm"
+                      disabled={joinPair.isPending}
+                      onClick={() =>
+                        joinPair.mutate({ labelItemId: pairing.id, tillItemId: it.id })
+                      }
+                    >
+                      <span className="font-medium">{it.name}</span>
+                      <span className="ml-2 tabular-nums text-muted">
+                        {money(it.linePrice, trip.currency)}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <Button type="button" variant="ghost" className="mt-4" onClick={() => setPairing(null)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
       {openShot && (
         <ShotSheet
           shot={openShot}
@@ -964,6 +1066,7 @@ function LineCard({
   onDelete,
   onOpenShot,
   onUnmatch,
+  onPair,
 }: {
   item: TripItem;
   tripCurrency: string;
@@ -973,6 +1076,7 @@ function LineCard({
   onDelete: (item: TripItem) => void;
   onOpenShot: (shot: ScanShot) => void;
   onUnmatch?: (item: TripItem) => void;
+  onPair?: (item: TripItem) => void;
 }) {
   return (
     <ItemCard
@@ -982,6 +1086,7 @@ function LineCard({
       onEdit={onEdit}
       onDelete={onDelete}
       onUnmatch={onUnmatch}
+      onPair={onPair}
       onReprocess={
         !photos.some((s) => s.itemId === item.id)
           ? undefined
