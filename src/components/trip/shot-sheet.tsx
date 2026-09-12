@@ -21,7 +21,7 @@ import {
 import { loadScanSettings, READ_OPTIONS, type ReadMode } from "@/lib/grocery/settings";
 import type { LabelExtraction, ReceiptExtraction, ScanShot } from "@/lib/grocery/types";
 import { extractionConfidence } from "@/lib/grocery/parse-local";
-import { tripDate } from "@/lib/grocery/format";
+import { money, tripDate, unitMoney, weight } from "@/lib/grocery/format";
 import { tagForShot, tagTone } from "@/lib/grocery/shot-status";
 import { cn } from "@/lib/utils";
 
@@ -269,7 +269,7 @@ export function ShotSheet({
               </p>
               {label.barcode ? <p className="font-mono text-xs">{label.barcode}</p> : null}
               <p className="text-xs">
-                {[label.brand, label.rawText.slice(0, 80)].filter(Boolean).join(" · ") ||
+                {[label.brand, label.rawText?.slice(0, 80)].filter(Boolean).join(" · ") ||
                   "No extra text stored"}
               </p>
             </div>

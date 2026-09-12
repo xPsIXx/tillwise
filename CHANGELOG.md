@@ -2,6 +2,10 @@
 
 All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
+## 0.3.22 — 2026-09-12
+
+- Trip: tapping a label photo no longer crashes (`weight is not defined`).
+
 ## 0.3.21 — 2026-09-12
 
 - Open Prices shop: “Use my location” lists grocery shops on the map near you. One tap sets the exact branch (OSM pin). Typed search still works.
