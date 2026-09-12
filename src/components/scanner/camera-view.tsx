@@ -26,7 +26,7 @@ import {
   LABEL_VIEWFINDER,
   makeThumbnail,
   publicImageToDataUrl,
-  RECEIPT_CAPTURE,
+  receiptPreset,
 } from "@/lib/grocery/image";
 import { loadPpocr, ppocrReady } from "@/lib/grocery/ppocr";
 import { SAMPLE_LABELS, SAMPLE_RECEIPTS } from "@/lib/grocery/sample-data";
@@ -165,8 +165,8 @@ async function openCamera(facing: "environment" | "user" | "any"): Promise<Media
             audio: false,
             video: {
               facingMode: { ideal: facing },
-              width: { ideal: 1920 },
-              height: { ideal: 1080 },
+              width: { ideal: 3840 },
+              height: { ideal: 2160 },
             },
           },
           { audio: false, video: { facingMode: { ideal: facing } } },
@@ -552,14 +552,18 @@ export function CameraView({
       const video = videoRef.current;
       let image: string;
       if (fromBlob) {
-        const preset = mode === "receipt" && !contribute ? RECEIPT_CAPTURE : LABEL_CAPTURE;
+        const preset =
+          mode === "receipt" && !contribute
+            ? receiptPreset(settingsRef.current.visionDetail)
+            : LABEL_CAPTURE;
         image = await blobToDataUrl(fromBlob, preset.maxSide, preset.quality);
       } else if (!video) {
         throw new Error("Camera is not ready");
       } else if (mode === "label" || contribute) {
         image = cropVideo(video, LABEL_VIEWFINDER);
       } else {
-        image = captureCanvas(video, RECEIPT_CAPTURE.maxSide, RECEIPT_CAPTURE.quality);
+        const preset = receiptPreset(settingsRef.current.visionDetail);
+        image = captureCanvas(video, preset.maxSide, preset.quality);
       }
       setHint(contribute ? "Reading shelf tag…" : mode === "label" ? "Keep scanning" : "Next portion");
       snapLock.current = false;
@@ -711,7 +715,7 @@ export function CameraView({
     );
   }
 
-  const samples = mode === "label" ? SAMPLE_LABELS : SAMPLE_RECEIPTS.filter((s) => s.id !== "full");
+  const samples = mode === "label" ? SAMPLE_LABELS : SAMPLE_RECEIPTS;
   const inflight = jobs.filter((j) => j.status === "queued" || j.status === "reading");
 
   return (
@@ -943,11 +947,15 @@ export function CameraView({
         <p className="mb-3 text-xs text-muted">
           {contribute
             ? "Snaps are not added to a trip. Check the name and price, then save. Shop comes from Settings."
-            : scanCfg.read === "local" || scanCfg.read === "byok" || scanCfg.read === "grok"
-              ? `Reader: ${READ_OPTIONS.find((o) => o.id === scanCfg.read)?.title}. Snaps go to the cart and read in the background — no confirm sheet.`
-              : holdForLook(scanCfg)
-                ? "Hold for a look is on — confirm before it joins the cart."
-                : "Add to cart, fill in later — reading continues in the background, including PP-OCR."}
+            : mode === "receipt"
+              ? scanCfg.visionDetail === "ultra"
+                ? "Ultra: one photo of the whole tape, or several portions. Collate stitches them."
+                : "Till tape — one full slip or several portions. Ultra is in Settings if a single shot is fuzzy."
+              : scanCfg.read === "local" || scanCfg.read === "byok" || scanCfg.read === "grok"
+                ? `Reader: ${READ_OPTIONS.find((o) => o.id === scanCfg.read)?.title}. Snaps go to the cart and read in the background — no confirm sheet.`
+                : holdForLook(scanCfg)
+                  ? "Hold for a look is on — confirm before it joins the cart."
+                  : "Add to cart, fill in later — reading continues in the background, including PP-OCR."}
         </p>
 
         <div className="flex items-center justify-between gap-3">

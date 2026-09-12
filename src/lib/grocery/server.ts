@@ -1055,7 +1055,7 @@ export const addScanShot = createServerFn({ method: "POST" })
       captureId?: number | null;
       lastRead?: LabelExtraction | ReceiptExtraction | null;
     }) => {
-      if (!input.imageData || input.imageData.length > 2_400_000) {
+      if (!input.imageData || input.imageData.length > 6_000_000) {
         throw new Error("Photo is too large");
       }
       return input;
@@ -2322,7 +2322,7 @@ export const troubleshootTrip = createServerFn({ method: "POST" })
         collate: LlmProvider;
         autoAdd: boolean;
         debugSamples: boolean;
-        visionDetail: "low" | "high";
+        visionDetail: "low" | "high" | "ultra";
         ppocrFeel: "loose" | "normal" | "strict";
         ppocrDetSize: "tiny" | "small" | "medium";
         ppocrRecSize: "tiny" | "small" | "medium";

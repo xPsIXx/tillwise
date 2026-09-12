@@ -6,7 +6,7 @@ import {
   blobToDataUrl,
   LABEL_CAPTURE,
   makeThumbnail,
-  RECEIPT_CAPTURE,
+  receiptPreset,
 } from "@/lib/grocery/image";
 import { readLabelCapture, readReceiptCapture } from "@/lib/grocery/read-capture";
 import {
@@ -160,7 +160,7 @@ export function ShotSheet({
   async function replacePhoto(file: File) {
     setBusy("save");
     try {
-      const preset = shot.kind === "receipt" ? RECEIPT_CAPTURE : LABEL_CAPTURE;
+      const preset = shot.kind === "receipt" ? receiptPreset(loadScanSettings().visionDetail) : LABEL_CAPTURE;
       const next = await blobToDataUrl(file, preset.maxSide, preset.quality);
       const thumb = await makeThumbnail(next);
       await updateScanShot({

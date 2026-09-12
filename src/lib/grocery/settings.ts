@@ -1,7 +1,7 @@
 import type { LlmProvider } from "./types";
 
 export type ReadMode = "local" | "ppocr" | "byok" | "grok" | "device";
-export type VisionDetail = "low" | "high";
+export type VisionDetail = "low" | "high" | "ultra";
 export type PpocrFeel = "loose" | "normal" | "strict";
 export type PpocrSize = "tiny" | "small" | "medium";
 
@@ -44,6 +44,24 @@ export const READ_OPTIONS: { id: ReadMode; title: string; body: string }[] = [
     id: "byok",
     title: "BYOK vision",
     body: "Your cloud or remote API. Paste an OpenAI-compatible endpoint, vision model, and API key below. Snaps file immediately and read in the background — no confirm sheet.",
+  },
+];
+
+export const PHOTO_DETAIL: { id: VisionDetail; title: string; body: string }[] = [
+  {
+    id: "low",
+    title: "Low",
+    body: "Smaller file. Fine for large produce stickers.",
+  },
+  {
+    id: "high",
+    title: "High",
+    body: "Sharper till tape. Default. One slip or several portions.",
+  },
+  {
+    id: "ultra",
+    title: "Ultra",
+    body: "Keeps more of a full-length till photo (~4K). Slower to send. Still shoot top/middle/bottom if the tape is long.",
   },
 ];
 
@@ -136,7 +154,8 @@ export function loadScanSettings(): ScanSettings {
       collate: "byok",
       autoAdd: parsed.autoAdd ?? DEFAULTS.autoAdd,
       debugSamples: Boolean(parsed.debugSamples),
-      visionDetail: parsed.visionDetail === "low" ? "low" : "high",
+      visionDetail:
+        parsed.visionDetail === "low" || parsed.visionDetail === "ultra" ? parsed.visionDetail : "high",
       ppocrFeel: feel,
       ppocrDetSize: asSize(parsed.ppocrDetSize, DEFAULTS.ppocrDetSize),
       ppocrRecSize: asSize(parsed.ppocrDetSize, DEFAULTS.ppocrDetSize),
@@ -150,7 +169,7 @@ export function saveScanSettings(next: ScanSettings) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(
     KEY,
-    JSON.stringify({ ...next, ppocrRecSize: next.ppocrDetSize, v: 6 }),
+    JSON.stringify({ ...next, ppocrRecSize: next.ppocrDetSize, v: 7 }),
   );
 }
 
@@ -181,4 +200,9 @@ export function visionProvider(cfg: ScanSettings): LlmProvider {
   if (cfg.read === "byok" || cfg.read === "grok") return "byok";
   if (cfg.read === "local") return "local";
   return "byok";
+}
+
+/** OpenAI-compatible APIs only accept low or high. Ultra still sends high, with a larger JPEG. */
+export function apiVisionDetail(detail: VisionDetail): "low" | "high" {
+  return detail === "low" ? "low" : "high";
 }

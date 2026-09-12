@@ -1,7 +1,19 @@
 export type CropBox = { x0: number; y0: number; x1: number; y1: number };
+export type ReceiptQuality = "low" | "high" | "ultra";
 
 export const LABEL_CAPTURE = { maxSide: 1600, quality: 0.88 } as const;
-export const RECEIPT_CAPTURE = { maxSide: 2200, quality: 0.93 } as const;
+/** Default = High. Used if settings are missing. */
+export const RECEIPT_CAPTURE = { maxSide: 2600, quality: 0.92 } as const;
+
+const RECEIPT_PRESETS: Record<ReceiptQuality, { maxSide: number; quality: number; visionSides: number[] }> = {
+  low: { maxSide: 1600, quality: 0.86, visionSides: [1200, 900, 720] },
+  high: { maxSide: 2600, quality: 0.92, visionSides: [2000, 1600, 1200, 900] },
+  ultra: { maxSide: 3840, quality: 0.95, visionSides: [2800, 2200, 1800, 1400, 1100] },
+};
+
+export function receiptPreset(quality: ReceiptQuality | null | undefined) {
+  return RECEIPT_PRESETS[quality === "low" || quality === "ultra" ? quality : "high"];
+}
 
 export const LABEL_VIEWFINDER: CropBox = { x0: 0.04, y0: 0.1, x1: 0.96, y1: 0.86 };
 export const RECEIPT_VIEWFINDER: CropBox = { x0: 0.06, y0: 0.06, x1: 0.94, y1: 0.9 };
@@ -55,12 +67,17 @@ export async function publicImageToDataUrl(path: string): Promise<string> {
 }
 
 /** Shrink a data URL until it fits the vision POST cap (server rejects > 2.4M chars). */
-export async function fitVisionImage(dataUrl: string, maxChars = 2_000_000): Promise<string> {
+export async function fitVisionImage(
+  dataUrl: string,
+  maxChars = 2_000_000,
+  quality: ReceiptQuality = "high",
+): Promise<string> {
   if (!dataUrl.startsWith("data:") || dataUrl.length <= maxChars) return dataUrl;
   const img = await loadImage(dataUrl);
-  for (const side of [1400, 1100, 900, 720]) {
+  const q = quality === "ultra" ? 0.9 : quality === "low" ? 0.8 : 0.84;
+  for (const side of receiptPreset(quality).visionSides) {
     const canvas = imageToCanvas(img, side);
-    const next = canvas.toDataURL("image/jpeg", 0.84);
+    const next = canvas.toDataURL("image/jpeg", q);
     if (next.length <= maxChars) return next;
   }
   return imageToCanvas(img, 640).toDataURL("image/jpeg", 0.7);

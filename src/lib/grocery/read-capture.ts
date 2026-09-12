@@ -3,7 +3,7 @@ import { extractionIsThin, readLabelOnDevice } from "./parse-local";
 import { loadPpocr, parsePpocrText, ppocrReady, runPpocr } from "./ppocr";
 import { fillFromMemory } from "./catalog";
 import { lookupProduct, scanLabelPhoto, scanLabelPhotos, scanReceiptPhoto, scanReceiptPhotos } from "./server";
-import { effectiveRead, loadScanSettings, visionProvider, type ReadMode } from "./settings";
+import { effectiveRead, loadScanSettings, visionProvider, apiVisionDetail, type ReadMode } from "./settings";
 import type { LabelExtraction, LlmProvider, ReceiptExtraction } from "./types";
 
 export async function readLabelCapture(
@@ -37,12 +37,12 @@ export async function readLabelCapture(
     if (!data) throw new Error("Browser text found nothing on this photo");
     return opts?.skipMemory ? data : withMemory(data, barcode);
   }
-  const visionImage = await fitVisionImage(image);
+  const visionImage = await fitVisionImage(image, 2_000_000, cfg.visionDetail);
   const result = await scanLabelPhoto({
     data: {
       imageDataUrl: visionImage,
       barcodeHint: barcode,
-      detail: cfg.visionDetail,
+      detail: apiVisionDetail(cfg.visionDetail),
       provider: mode === "byok" || mode === "grok" ? "byok" : "local",
       storeName: opts?.storeName ?? null,
     },
@@ -66,11 +66,11 @@ export async function readReceiptCapture(
   storeName?: string | null,
 ): Promise<ReceiptExtraction> {
   const cfg = loadScanSettings();
-  const visionImage = await fitVisionImage(image);
+  const visionImage = await fitVisionImage(image, 2_000_000, cfg.visionDetail);
   const result = await scanReceiptPhoto({
     data: {
       imageDataUrl: visionImage,
-      detail: cfg.visionDetail,
+      detail: apiVisionDetail(cfg.visionDetail),
       provider: provider ?? visionProvider(cfg),
       storeName: storeName ?? null,
     },
@@ -110,7 +110,7 @@ export async function readLabelCaptureBatch(
   const cfg = loadScanSettings();
   const prepared = await Promise.all(
     photos.map(async (p) => {
-      const imageDataUrl = await fitVisionImage(p.image, 750_000);
+      const imageDataUrl = await fitVisionImage(p.image, 750_000, cfg.visionDetail);
       return { imageDataUrl, barcodeHint: p.barcode, chars: imageDataUrl.length };
     }),
   );
@@ -123,7 +123,7 @@ export async function readLabelCaptureBatch(
       const batch = await scanLabelPhotos({
         data: {
           photos: chunk.map(({ imageDataUrl, barcodeHint }) => ({ imageDataUrl, barcodeHint })),
-          detail: cfg.visionDetail,
+          detail: apiVisionDetail(cfg.visionDetail),
           provider: "byok",
           storeName: storeName ?? null,
         },
@@ -145,11 +145,11 @@ export async function readReceiptCaptureBatch(
   const cfg = loadScanSettings();
   const prepared = await Promise.all(
     images.map(async (image) => {
-      const imageDataUrl = await fitVisionImage(image, 750_000);
+      const imageDataUrl = await fitVisionImage(image, cfg.visionDetail === "ultra" ? 1_800_000 : cfg.visionDetail === "low" ? 750_000 : 1_200_000, cfg.visionDetail);
       return { imageDataUrl, chars: imageDataUrl.length };
     }),
   );
-  const chunks = chunkBySize(prepared, 4, 5_500_000);
+  const chunks = chunkBySize(prepared, cfg.visionDetail === "ultra" ? 2 : 4, 5_500_000);
   const results: BatchRead<ReceiptExtraction>[] = [];
   let calls = 0;
   for (const chunk of chunks) {
@@ -158,7 +158,7 @@ export async function readReceiptCaptureBatch(
       const batch = await scanReceiptPhotos({
         data: {
           images: chunk.map((c) => c.imageDataUrl),
-          detail: cfg.visionDetail,
+          detail: apiVisionDetail(cfg.visionDetail),
           provider: "byok",
           storeName: storeName ?? null,
         },

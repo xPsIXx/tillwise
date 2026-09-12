@@ -8,11 +8,11 @@ import { loadPpocr, ppocrReady } from "@/lib/grocery/ppocr";
 import {
   PPOCR_FEEL,
   PPOCR_SIZES,
+  PHOTO_DETAIL,
   READ_OPTIONS,
   loadScanSettings,
   saveScanSettings,
   type ScanSettings,
-  type VisionDetail,
 } from "@/lib/grocery/settings";
 import { getLlmConfig, inspectLedger, listLlmModels, listTrips, repairLedger, saveLlmConfig, troubleshootTrip, exportLedger, getOffConfig, saveOffConfig, searchOffStores, testOffLogin } from "@/lib/grocery/server";
 import { NearbyShopPicker } from "@/components/scanner/nearby-shop";
@@ -385,25 +385,29 @@ function SettingsPage() {
 
       {showVisionDetail && (
         <section className="mt-8">
-          <h3 className="text-sm font-medium">Photo detail</h3>
+          <h3 className="text-sm font-medium">Till photo quality</h3>
           <p className="mt-1 text-xs text-muted">
-            High sends a sharper till slip (more tokens). Low is enough for large scale stickers.
+            How large a receipt snap is kept and sent. Ultra is for one photo of the whole tape.
+            You can still take several portions — collate stitches them. Labels stay on High.
           </p>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            {(["low", "high"] as VisionDetail[]).map((d) => (
+          <div className="mt-3 grid grid-cols-3 gap-2">
+            {PHOTO_DETAIL.map((opt) => (
               <button
-                key={d}
+                key={opt.id}
                 type="button"
-                onClick={() => patch({ visionDetail: d })}
+                onClick={() => patch({ visionDetail: opt.id })}
                 className={cn(
-                  "h-11 rounded-xl text-sm font-medium capitalize",
-                  settings.visionDetail === d ? "bg-fg text-bg" : "bg-elevated text-muted",
+                  "h-11 rounded-xl text-sm font-medium",
+                  settings.visionDetail === opt.id ? "bg-fg text-bg" : "bg-elevated text-muted",
                 )}
               >
-                {d}
+                {opt.title}
               </button>
             ))}
           </div>
+          <p className="mt-2 text-xs text-muted">
+            {PHOTO_DETAIL.find((o) => o.id === settings.visionDetail)?.body}
+          </p>
         </section>
       )}
 

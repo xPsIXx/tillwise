@@ -2,6 +2,10 @@
 
 All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
+## 0.3.23 — 2026-09-12
+
+- Till snaps: Low / High / Ultra quality in Settings. Ultra keeps ~4K for a whole slip. Several portions still stitch. Debug samples include the full receipt again.
+
 ## 0.3.22 — 2026-09-12
 
 - Trip: tapping a label photo no longer crashes (`weight is not defined`).
