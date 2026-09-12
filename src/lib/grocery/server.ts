@@ -3002,4 +3002,92 @@ export const shareTripOpenFood = createServerFn({ method: "POST" })
     },
   );
 
+export const logShelfPrice = createServerFn({ method: "POST" })
+  .validator(
+    (input: {
+      name: string;
+      barcode?: string | null;
+      brand?: string | null;
+      unitPrice?: number | null;
+      linePrice?: number | null;
+      weightValue?: number | null;
+      weightUnit?: string | null;
+      currency?: string | null;
+      storeName: string;
+      image?: string | null;
+      sendOff?: boolean;
+    }) => {
+      if (!input.name.trim()) throw new Error("Need a product name");
+      if (input.unitPrice == null && input.linePrice == null) throw new Error("Need a price");
+      if (!input.storeName.trim()) throw new Error("Need a shop name — it is rarely on the sticker");
+      if (input.image && input.image.length > 2_400_000) throw new Error("Photo is too large");
+      return input;
+    },
+  )
+  .handler(async ({ data }): Promise<{ saved: true; sent: boolean; error?: string }> => {
+    const sql = await getSql();
+    const store = data.storeName.trim();
+    await rememberCatalog(sql, {
+      name: data.name.trim(),
+      brand: data.brand?.trim() || null,
+      barcode: data.barcode?.replace(/\D/g, "") || null,
+      category: null,
+      quantityUnit: null,
+      weightUnit: data.weightUnit ?? null,
+      unitPrice: data.unitPrice ?? null,
+      linePrice: data.linePrice ?? null,
+      weightValue: data.weightValue ?? null,
+      currency: data.currency ?? "AED",
+      tripId: null,
+      storeName: store,
+    });
+    recordAction({ action: "logShelfPrice", ok: true, detail: `${data.name.trim()} @ ${store}` });
+    await checkpointLedger();
+    if (!data.sendOff) return { saved: true, sent: false };
+    if (!data.image?.startsWith("data:image/")) {
+      return { saved: true, sent: false, error: "Need the photo to send to Open Prices" };
+    }
+    try {
+      const { loadOffConfig, uploadProof, createPrice } = await import("./openfood");
+      const cfg = await loadOffConfig();
+      if (!cfg.username || !cfg.hasPassword) {
+        return { saved: true, sent: false, error: "Add Open Food Facts login in Settings" };
+      }
+      if (!cfg.osmId || !cfg.osmType) {
+        return { saved: true, sent: false, error: "Pick the shop on OpenStreetMap in Settings" };
+      }
+      const price = data.linePrice ?? data.unitPrice;
+      if (price == null) return { saved: true, sent: false, error: "Need a price" };
+      const date = new Date().toISOString().slice(0, 10);
+      const currency = (data.currency || "AED").toUpperCase();
+      const proofId = await uploadProof({
+        imageDataUrl: data.image,
+        type: "PRICE_TAG",
+        date,
+        currency,
+        osmId: cfg.osmId,
+        osmType: cfg.osmType,
+        comment: `Tillwise shelf @ ${store}`,
+      });
+      await createPrice({
+        proofId,
+        barcode: data.barcode?.replace(/\D/g, "") || null,
+        name: data.name.trim(),
+        price,
+        currency,
+        date,
+        osmId: cfg.osmId,
+        osmType: cfg.osmType,
+        perKg: Boolean(data.unitPrice && data.weightValue),
+      });
+      return { saved: true, sent: true };
+    } catch (err) {
+      return {
+        saved: true,
+        sent: false,
+        error: err instanceof Error ? err.message : "Open Prices send failed",
+      };
+    }
+  });
+
 

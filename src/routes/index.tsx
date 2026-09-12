@@ -111,6 +111,20 @@ function Home() {
         </section>
       )}
 
+      <section className="mt-4 rounded-2xl bg-surface p-5 shadow-[var(--shadow-border)]">
+        <h2 className="font-display text-2xl">Shelf price</h2>
+        <p className="mt-1 text-sm text-muted">
+          Snap a pack on the shelf. Saved to your prices for that shop, and sent to Open Prices if
+          you set the account. Shop name is taken from Settings — it is rarely on the sticker. Not a
+          trip.
+        </p>
+        <Button asChild className="mt-4" variant="secondary">
+          <Link to="/scan" search={{ contribute: true }}>
+            Log a shelf price
+          </Link>
+        </Button>
+      </section>
+
       <dl className="mt-6 grid grid-cols-2 gap-3">
         <StatCard label="Filed trips" value={String(filed.length)} />
         <StatCard

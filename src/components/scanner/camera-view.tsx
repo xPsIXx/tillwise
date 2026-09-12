@@ -15,6 +15,8 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { detectBarcode } from "@/lib/grocery/detect";
+import { readLabelCapture } from "@/lib/grocery/read-capture";
+import { ShelfSheet, type ShelfDraft } from "@/components/scanner/shelf-sheet";
 import {
   blobToDataUrl,
   captureCanvas,
@@ -42,6 +44,8 @@ import {
   addReceiptCapture,
   addScanShot,
   getLlmConfig,
+  getOffConfig,
+  logShelfPrice,
   updateScanShot,
 } from "@/lib/grocery/server";
 import type { LabelExtraction, ReceiptExtraction, ScanMode } from "@/lib/grocery/types";
@@ -225,13 +229,17 @@ export function CameraView({
   onClose,
   onSaved,
   storeName,
+  contribute = false,
+  onContribute,
 }: {
-  tripId: number;
+  tripId?: number;
   mode: ScanMode;
   onMode: (mode: ScanMode) => void;
   onClose: () => void;
   onSaved: () => void;
   storeName?: string | null;
+  contribute?: boolean;
+  onContribute?: (on: boolean) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const viewCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -242,10 +250,13 @@ export function CameraView({
   const [scanCfg, setScanCfg] = useState<ScanSettings>(() => settingsRef.current);
   const [camera, setCamera] = useState<CameraStatus>("starting");
   const [torch, setTorch] = useState(false);
-  const [hint, setHint] = useState("Frame a label");
+  const [hint, setHint] = useState(contribute ? "Frame the pack and price tag" : "Frame a label");
   const [flash, setFlash] = useState(false);
   const [jobs, setJobs] = useState<Job[]>(() => listScanJobs());
   const [pending, setPending] = useState<Pending | null>(null);
+  const [shelf, setShelf] = useState<ShelfDraft | null>(null);
+  const [shelfBusy, setShelfBusy] = useState(false);
+  const [offReady, setOffReady] = useState(false);
   const [saving, setSaving] = useState(false);
   const [engine, setEngine] = useState<EngineProgress | null>(null);
   const [readerWarn, setReaderWarn] = useState<string | null>(null);
@@ -412,7 +423,75 @@ export function CameraView({
     };
   }, [onSaved]);
 
+  async function captureShelf(image: string, barcode: string | null) {
+    setShelfBusy(true);
+    setHint("Reading shelf tag…");
+    try {
+      const dataUrl = image.startsWith("data:") ? image : await publicImageToDataUrl(image);
+      const data = await readLabelCapture(dataUrl, barcode, undefined, { storeName: storeName ?? null });
+      const cfg = await getOffConfig().catch(() => null);
+      const store =
+        cfg?.osmName?.split(",")[0]?.trim() || storeName?.trim() || "";
+      setOffReady(Boolean(cfg?.username && cfg.hasPassword && cfg.osmId));
+      setShelf({ image: dataUrl, data, store });
+      setHint("Check the price");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not read the shelf tag");
+      setHint("Frame the pack and price tag");
+    } finally {
+      setShelfBusy(false);
+    }
+  }
+
+  async function saveShelf(input: {
+    name: string;
+    barcode: string;
+    price: string;
+    store: string;
+    sendOff: boolean;
+  }) {
+    if (!shelf) return;
+    const price = Number(input.price);
+    if (!Number.isFinite(price) || price <= 0) {
+      toast.error("Need a price");
+      return;
+    }
+    setShelfBusy(true);
+    try {
+      const perKg = Boolean(shelf.data.weightValue && shelf.data.unitPrice);
+      const res = await logShelfPrice({
+        data: {
+          name: input.name,
+          barcode: input.barcode || shelf.data.barcode,
+          brand: shelf.data.brand,
+          unitPrice: perKg ? price : shelf.data.unitPrice,
+          linePrice: perKg ? shelf.data.linePrice ?? price : price,
+          weightValue: shelf.data.weightValue,
+          weightUnit: shelf.data.weightUnit,
+          currency: shelf.data.currency ?? "AED",
+          storeName: input.store,
+          image: input.sendOff ? shelf.image : null,
+          sendOff: input.sendOff,
+        },
+      });
+      if (res.sent) toast.success("Saved locally and sent to Open Prices");
+      else if (res.error) toast.success(`Saved locally. Not sent: ${res.error}`);
+      else toast.success("Saved to your prices");
+      setShelf(null);
+      setHint("Frame the pack and price tag");
+      onSaved();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not save");
+    } finally {
+      setShelfBusy(false);
+    }
+  }
+
   async function enqueue(image: string, barcode: string | null, scanMode: ScanMode) {
+    if (contribute || tripId == null) {
+      await captureShelf(image, barcode);
+      return;
+    }
     const cfg = loadScanSettings();
     settingsRef.current = cfg;
     const dataUrl = image.startsWith("data:") ? image : await publicImageToDataUrl(image);
@@ -472,20 +551,20 @@ export function CameraView({
       const video = videoRef.current;
       let image: string;
       if (fromBlob) {
-        const preset = mode === "receipt" ? RECEIPT_CAPTURE : LABEL_CAPTURE;
+        const preset = mode === "receipt" && !contribute ? RECEIPT_CAPTURE : LABEL_CAPTURE;
         image = await blobToDataUrl(fromBlob, preset.maxSide, preset.quality);
       } else if (!video) {
         throw new Error("Camera is not ready");
-      } else if (mode === "label") {
+      } else if (mode === "label" || contribute) {
         image = cropVideo(video, LABEL_VIEWFINDER);
       } else {
         image = captureCanvas(video, RECEIPT_CAPTURE.maxSide, RECEIPT_CAPTURE.quality);
       }
-      setHint(mode === "label" ? "Keep scanning" : "Next portion");
+      setHint(contribute ? "Reading shelf tag…" : mode === "label" ? "Keep scanning" : "Next portion");
       snapLock.current = false;
       void (async () => {
         let barcode: string | null = null;
-        if (mode === "label") {
+        if (mode === "label" || contribute) {
           try {
             const blob = await (await fetch(image)).blob();
             const bmp = await createImageBitmap(blob);
@@ -495,7 +574,7 @@ export function CameraView({
             barcode = null;
           }
         }
-        await enqueue(image, barcode, mode);
+        await enqueue(image, barcode, contribute ? "label" : mode);
       })();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not capture");
@@ -510,6 +589,7 @@ export function CameraView({
   }
 
   async function useSample(kind: ScanMode, id: string) {
+    if (contribute || tripId == null) return;
     if (kind === "label") {
       const sample = SAMPLE_LABELS.find((s) => s.id === id);
       if (!sample) return;
@@ -560,7 +640,7 @@ export function CameraView({
   }
 
   async function confirmPending() {
-    if (!pending) return;
+    if (!pending || tripId == null) return;
     setSaving(true);
     try {
       const thumb = pending.image.startsWith("data:")
@@ -806,32 +886,64 @@ export function CameraView({
       </div>
 
       <div className="shrink-0 border-t border-border bg-bg px-4 pb-3 pt-3">
-        <div className="mb-3 grid grid-cols-2 rounded-xl bg-elevated p-1">
-          {(["label", "receipt"] as const).map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => {
-                onMode(m);
-                setHint(m === "label" ? "Frame a label" : "Align the till tape");
-              }}
-              className={cn(
-                "h-10 rounded-lg text-sm font-medium",
-                mode === m ? "bg-fg text-bg" : "text-muted",
-              )}
-            >
-              {m === "label" ? "Labels" : "Receipt"}
-            </button>
-          ))}
-        </div>
+        {contribute ? (
+          <div className="mb-3 flex items-center justify-between gap-2 rounded-xl bg-elevated px-3 py-2">
+            <p className="text-sm">
+              Shelf prices — not {tripId ? "this trip" : "a trip"}
+            </p>
+            {onContribute ? (
+              <button
+                type="button"
+                className="text-xs font-medium text-muted underline-offset-2 hover:underline"
+                onClick={() => onContribute(false)}
+              >
+                {tripId ? "Back to trip scan" : "Cancel"}
+              </button>
+            ) : null}
+          </div>
+        ) : (
+          <>
+            <div className="mb-3 grid grid-cols-2 rounded-xl bg-elevated p-1">
+              {(["label", "receipt"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => {
+                    onMode(m);
+                    setHint(m === "label" ? "Frame a label" : "Align the till tape");
+                  }}
+                  className={cn(
+                    "h-10 rounded-lg text-sm font-medium",
+                    mode === m ? "bg-fg text-bg" : "text-muted",
+                  )}
+                >
+                  {m === "label" ? "Labels" : "Receipt"}
+                </button>
+              ))}
+            </div>
+            {onContribute ? (
+              <button
+                type="button"
+                className="mb-3 text-xs font-medium text-muted underline-offset-2 hover:underline"
+                onClick={() => {
+                  onContribute(true);
+                  setHint("Frame the pack and price tag");
+                }}
+              >
+                Log a shelf price instead (not this trip)
+              </button>
+            ) : null}
+          </>
+        )}
 
         <p className="mb-3 text-xs text-muted">
-          Reader: {READ_OPTIONS.find((o) => o.id === scanCfg.read)?.title}.{" "}
-          {scanCfg.read === "local" || scanCfg.read === "byok" || scanCfg.read === "grok"
-            ? "Snaps go to the cart and read in the background — no confirm sheet."
-            : holdForLook(scanCfg)
-              ? "Hold for a look is on — confirm before it joins the cart."
-              : "Add to cart, fill in later — reading continues in the background, including PP-OCR."}
+          {contribute
+            ? "Snaps are not added to a trip. Check the name and price, then save. Shop comes from Settings."
+            : scanCfg.read === "local" || scanCfg.read === "byok" || scanCfg.read === "grok"
+              ? `Reader: ${READ_OPTIONS.find((o) => o.id === scanCfg.read)?.title}. Snaps go to the cart and read in the background — no confirm sheet.`
+              : holdForLook(scanCfg)
+                ? "Hold for a look is on — confirm before it joins the cart."
+                : "Add to cart, fill in later — reading continues in the background, including PP-OCR."}
         </p>
 
         <div className="flex items-center justify-between gap-3">
@@ -854,7 +966,7 @@ export function CameraView({
           <button
             type="button"
             onClick={() => void captureNow()}
-            disabled={camera !== "live"}
+            disabled={camera !== "live" || shelfBusy}
             className="grid size-20 place-items-center rounded-full bg-fg text-bg disabled:opacity-40"
             aria-label="Shutter"
           >
@@ -863,7 +975,7 @@ export function CameraView({
           <div className="size-12" />
         </div>
 
-        {scanCfg.debugSamples && (
+        {scanCfg.debugSamples && !contribute && (
         <div className="mt-4">
           <p className="text-xs font-medium uppercase tracking-[0.16em] text-subtle">
             Try a sample
@@ -889,6 +1001,18 @@ export function CameraView({
         )}
       </div>
 
+      {shelf && (
+        <ShelfSheet
+          draft={shelf}
+          canSend={offReady}
+          busy={shelfBusy}
+          onCancel={() => {
+            setShelf(null);
+            setHint("Frame the pack and price tag");
+          }}
+          onSave={(input) => void saveShelf(input)}
+        />
+      )}
       {pending && (
         <ConfirmSheet
           pending={pending}

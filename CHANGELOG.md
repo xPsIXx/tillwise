@@ -2,6 +2,10 @@
 
 All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
+## 0.3.20 — 2026-09-12
+
+- Home + Scan: log a shelf price without a trip. Saved to your price history per shop. Optionally sent to Open Prices as a price-tag proof. Shop name comes from Settings (OSM), not the sticker.
+
 ## 0.3.19 — 2026-09-12
 
 - Open Prices: till photo only (labels not sent). Preview of the redacted slip before send. Card/loyalty boxes from the till read (footer fallback). Check mark = already sent.
