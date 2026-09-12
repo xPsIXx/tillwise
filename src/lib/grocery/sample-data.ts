@@ -134,6 +134,7 @@ export const SAMPLE_RECEIPTS: SampleReceipt[] = [
       currency: "AED",
       rawText:
         "CARREFOUR  Yas Mall, Abu Dhabi  24/08/2026 18:42  ORG BANANAS 1.24kg 8.90  ALMARAI MILK 2L 11.50  TOM VINE 0.68kg 6.46",
+      piiBoxes: [],
     },
   },
   {
@@ -173,6 +174,7 @@ export const SAMPLE_RECEIPTS: SampleReceipt[] = [
       currency: "AED",
       rawText:
         "EXTRA VIRGIN OLIVE OIL 750ml 28.75  EGGS LARGE 12PK 14.20  SUBTOTAL 69.81  VAT 5% 3.32  TOTAL AED 73.13",
+      piiBoxes: [],
     },
   },
   {
@@ -239,6 +241,7 @@ export const SAMPLE_RECEIPTS: SampleReceipt[] = [
       currency: "AED",
       rawText:
         "CARREFOUR  ORG BANANAS 1.24kg 8.90  ALMARAI MILK 2L 11.50  TOM VINE 0.68kg 6.46  EXTRA VIRGIN OLIVE OIL 750ml 28.75  EGGS LARGE 12PK 14.20  TOTAL AED 73.13",
+      piiBoxes: [],
     },
   },
 ];

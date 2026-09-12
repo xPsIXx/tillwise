@@ -106,6 +106,7 @@ type ShotRow = {
   last_read_json: string | null;
   created_at: unknown;
   store_name?: string | null;
+  shared_at?: unknown;
 };
 
 function mapShot(row: ShotRow): ScanShot {
@@ -128,6 +129,7 @@ function mapShot(row: ShotRow): ScanShot {
     lastRead,
     createdAt: iso(row.created_at),
     storeName: row.store_name,
+    sharedAt: row.shared_at ? iso(row.shared_at) : null,
   };
 }
 
@@ -135,7 +137,7 @@ async function loadShots(tripId: number): Promise<ScanShot[]> {
   const sql = await getSql();
   const rows = await sql<ShotRow>`
     select s.id, s.trip_id, s.kind, s.thumbnail_data, s.barcode, s.item_id, s.capture_id,
-           s.last_read_json, s.created_at, t.store_name
+           s.last_read_json, s.created_at, s.shared_at, t.store_name
       from scan_shots s
       join trips t on t.id = s.trip_id
      where s.trip_id = ${tripId}
@@ -1198,7 +1200,7 @@ export const listRecentShots = createServerFn({ method: "GET" }).handler(
     const sql = await getSql();
     const rows = await sql<ShotRow>`
       select s.id, s.trip_id, s.kind, s.thumbnail_data, s.barcode, s.item_id, s.capture_id,
-             s.last_read_json, s.created_at, t.store_name
+             s.last_read_json, s.created_at, s.shared_at, t.store_name
         from scan_shots s
         join trips t on t.id = s.trip_id
        order by s.created_at desc, s.id desc
@@ -2856,5 +2858,148 @@ export const fixProduceKey = createServerFn({ method: "POST" })
     }
     return { name: newName, productId };
   });
+
+export const getOffConfig = createServerFn({ method: "GET" }).handler(async () => {
+  const { loadOffConfig } = await import("./openfood");
+  return loadOffConfig();
+});
+
+export const saveOffConfig = createServerFn({ method: "POST" })
+  .validator(
+    (input: {
+      username?: string;
+      password?: string;
+      osmId?: number | null;
+      osmType?: "NODE" | "WAY" | "RELATION" | null;
+      osmName?: string | null;
+    }) => input,
+  )
+  .handler(async ({ data }) => {
+    const { saveOffConfig: save } = await import("./openfood");
+    return save(data);
+  });
+
+export const searchOffStores = createServerFn({ method: "POST" })
+  .validator((q: string) => q)
+  .handler(async ({ data: q }) => {
+    const { searchOffStores: search } = await import("./openfood");
+    return search(q);
+  });
+
+export const testOffLogin = createServerFn({ method: "POST" }).handler(async () => {
+  const { testOffLogin: test } = await import("./openfood");
+  return test();
+});
+
+export const shareTripOpenFood = createServerFn({ method: "POST" })
+  .validator((input: { tripId: number; receipts: { shotId: number; image: string }[] }) => input)
+  .handler(
+    async ({
+      data,
+    }): Promise<{ photos: number; prices: number; skipped: number; already: number; errors: string[] }> => {
+      const { loadOffConfig, uploadProof, createPrice } = await import("./openfood");
+      const cfg = await loadOffConfig();
+      if (!cfg.username || !cfg.hasPassword) {
+        throw new Error("Add Open Food Facts username and password in Settings");
+      }
+      if (!cfg.osmId || !cfg.osmType) {
+        throw new Error("Pick the shop on OpenStreetMap in Settings so prices have a place");
+      }
+      const tripId = data.tripId;
+      const sql = await getSql();
+      const marked = await sql<{ id: number; shared_at: unknown }>`
+        select id, shared_at from scan_shots
+         where trip_id = ${tripId} and kind = 'receipt'
+      `;
+      const alreadyIds = new Set(marked.filter((r) => r.shared_at).map((r) => Number(r.id)));
+      const receipts = data.receipts.filter(
+        (r) => r.image.startsWith("data:image/") && !alreadyIds.has(r.shotId),
+      );
+      const already = data.receipts.filter((r) => alreadyIds.has(r.shotId)).length;
+      if (receipts.length === 0) {
+        throw new Error(
+          already > 0
+            ? "This till was already sent to Open Prices."
+            : "Need a till photo. Open Prices accepts the receipt as proof — labels are not required.",
+        );
+      }
+      const trips = await sql<{ started_at: unknown; currency: string | null }>`
+        select started_at, currency from trips where id = ${tripId} limit 1
+      `;
+      const trip = trips[0];
+      if (!trip) throw new Error("Trip not found");
+      const date = iso(trip.started_at).slice(0, 10);
+      const currency = (trip.currency || "AED").toUpperCase();
+      const items = await sql<{
+        name: string;
+        barcode: string | null;
+        unit_price: unknown;
+        line_price: unknown;
+        weight_value: unknown;
+      }>`
+        select name, barcode, unit_price, line_price, weight_value
+          from trip_items where trip_id = ${tripId}
+      `;
+      const errors: string[] = [];
+      let photos = 0;
+      let prices = 0;
+      const priced = items
+        .map((item) => ({
+          name: item.name,
+          barcode: item.barcode?.replace(/\D/g, "") || null,
+          price: n(item.line_price) ?? n(item.unit_price),
+          perKg: Boolean(n(item.unit_price) && n(item.weight_value)),
+        }))
+        .filter((item) => item.price);
+      const receiptTotal = priced.reduce((sum, item) => sum + (item.price ?? 0), 0);
+      let firstProof: number | null = null;
+      const sentIds: number[] = [];
+      for (const shot of receipts) {
+        try {
+          const proofId = await uploadProof({
+            imageDataUrl: shot.image,
+            type: "RECEIPT",
+            date,
+            currency,
+            osmId: cfg.osmId,
+            osmType: cfg.osmType,
+            comment: `Tillwise trip ${tripId}; payment details blacked out`,
+            receiptCount: priced.length,
+            receiptTotal,
+          });
+          photos += 1;
+          sentIds.push(shot.shotId);
+          if (firstProof == null) firstProof = proofId;
+        } catch (err) {
+          errors.push(`Till photo: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      if (firstProof == null) {
+        throw new Error(errors[0] || "Could not send the till photo.");
+      }
+      for (const item of priced) {
+        try {
+          await createPrice({
+            proofId: firstProof,
+            barcode: item.barcode,
+            name: item.name,
+            price: item.price as number,
+            currency,
+            date,
+            osmId: cfg.osmId,
+            osmType: cfg.osmType,
+            perKg: item.perKg,
+          });
+          prices += 1;
+        } catch (err) {
+          errors.push(`${item.name}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      for (const id of sentIds) {
+        await sql`update scan_shots set shared_at = now() where id = ${id}`;
+      }
+      return { photos, prices, skipped: items.length - priced.length, already, errors: errors.slice(0, 12) };
+    },
+  );
 
 

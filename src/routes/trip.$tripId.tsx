@@ -27,6 +27,7 @@ import {
   previewCollate,
   reopenTrip,
   unmatchItem,
+  shareTripOpenFood,
   updateItem,
   updateReceiptCapture,
   updateScanShot,
@@ -37,6 +38,7 @@ import { extractionConfidence } from "@/lib/grocery/parse-local";
 import { readLabelCapture, readLabelCaptureBatch, readReceiptCapture, readReceiptCaptureBatch } from "@/lib/grocery/read-capture";
 import { listScanJobs, onScanQueueSaved, resumeShots, resumeUnreadShots, shotFailed, shotNeedsRead, subscribeScanQueue } from "@/lib/grocery/scan-queue";
 import { nameKey } from "@/lib/grocery/catalog";
+import { redactReceiptPii } from "@/lib/grocery/redact-receipt";
 import { loadScanSettings } from "@/lib/grocery/settings";
 import type { CollatePreview, LabelExtraction, ReceiptExtraction, ScanShot, TripItem } from "@/lib/grocery/types";
 
@@ -74,6 +76,7 @@ function failedReceipt(message: string): ReceiptExtraction {
     total: null,
     currency: null,
     rawText: `Couldn't read: ${message}`,
+    piiBoxes: [],
   };
 }
 
@@ -297,6 +300,8 @@ function TripPage() {
   const [draftPrice, setDraftPrice] = useState("");
   const [draftWeight, setDraftWeight] = useState("");
   const [queueTick, setQueueTick] = useState(0);
+  const [sharePreview, setSharePreview] = useState<{ shotId: number; image: string }[] | null>(null);
+  const [sharePreparing, setSharePreparing] = useState(false);
 
   const detailQuery = useQuery({
     queryKey: ["trip", tripId],
@@ -520,6 +525,42 @@ function TripPage() {
     onError: (err) => toast.error(err instanceof Error ? err.message : "Could not run BYOK"),
     onSettled: () => setByokPhase(null),
   });
+
+  const shareOff = useMutation({
+    mutationFn: async () => {
+      if (!sharePreview?.length) throw new Error("Review the till first");
+      return shareTripOpenFood({ data: { tripId, receipts: sharePreview } });
+    },
+    onSuccess: (res) => {
+      const extra = res.errors.length ? ` ${res.errors.length} issue(s).` : "";
+      toast.success(`Sent ${res.photos} till photo(s) and ${res.prices} price(s). Card/loyalty blacked out.${extra}`);
+      setSharePreview(null);
+      invalidate();
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not send till"),
+  });
+
+  async function prepareShare() {
+    const tills = (detailQuery.data?.shots ?? []).filter((s) => s.kind === "receipt" && !s.sharedAt);
+    if (tills.length === 0) {
+      toast.error("This till was already sent to Open Prices");
+      return;
+    }
+    setSharePreparing(true);
+    try {
+      const receipts: { shotId: number; image: string }[] = [];
+      for (const shot of tills) {
+        const { image } = await getShotImage({ data: shot.id });
+        const boxes = shot.lastRead && "piiBoxes" in shot.lastRead ? shot.lastRead.piiBoxes : [];
+        receipts.push({ shotId: shot.id, image: await redactReceiptPii(image, boxes) });
+      }
+      setSharePreview(receipts);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not prepare till");
+    } finally {
+      setSharePreparing(false);
+    }
+  }
 
   const sendPpocr = useMutation({
     mutationFn: () => reprocessTripShots(detailQuery.data?.shots ?? [], "ppocr"),
@@ -781,6 +822,23 @@ function TripPage() {
                   : "Labels, then till slips with BYOK"}
           </Button>
         )}
+        <Button
+          variant="secondary"
+          disabled={
+            shareOff.isPending ||
+            sharePreparing ||
+            photos.filter((s) => s.kind === "receipt").length === 0 ||
+            photos.filter((s) => s.kind === "receipt" && !s.sharedAt).length === 0
+          }
+          onClick={() => void prepareShare()}
+        >
+          {sharePreparing
+            ? "Blacking out…"
+            : photos.some((s) => s.kind === "receipt" && s.sharedAt) &&
+                photos.filter((s) => s.kind === "receipt" && !s.sharedAt).length === 0
+              ? "Till already sent"
+              : "Send till to Open Prices"}
+        </Button>
         <Button
           variant="ghost"
           className={confirmDelete ? "text-fg" : "text-muted"}
@@ -1226,6 +1284,49 @@ function TripPage() {
             });
           }}
         />
+      )}
+      {sharePreview && (
+        <div
+          className="fixed inset-0 z-40 grid place-items-end bg-bg/50 p-4 sm:place-items-center"
+          onClick={() => !shareOff.isPending && setSharePreview(null)}
+        >
+          <div
+            className="max-h-[85dvh] w-full max-w-md overflow-y-auto rounded-2xl bg-surface p-5 shadow-[var(--shadow-border)]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="font-display text-2xl">Send this till?</h3>
+            <p className="mt-1 text-sm text-muted">
+              Card, loyalty, and other shopper details are blacked out. This is what Open Prices will
+              get. The original stays in Tillwise.
+            </p>
+            <ul className="mt-4 space-y-3">
+              {sharePreview.map((shot) => (
+                <li key={shot.shotId} className="overflow-hidden rounded-xl bg-elevated">
+                  <img src={shot.image} alt="Till with personal details hidden" className="w-full" />
+                </li>
+              ))}
+            </ul>
+            <div className="mt-5 flex gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                className="flex-1"
+                disabled={shareOff.isPending}
+                onClick={() => setSharePreview(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                className="flex-1"
+                disabled={shareOff.isPending}
+                onClick={() => shareOff.mutate()}
+              >
+                {shareOff.isPending ? "Sending…" : "Send"}
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
     </main>
   );

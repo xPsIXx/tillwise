@@ -14,7 +14,7 @@ import {
   type ScanSettings,
   type VisionDetail,
 } from "@/lib/grocery/settings";
-import { getLlmConfig, inspectLedger, listLlmModels, listTrips, repairLedger, saveLlmConfig, troubleshootTrip, exportLedger } from "@/lib/grocery/server";
+import { getLlmConfig, inspectLedger, listLlmModels, listTrips, repairLedger, saveLlmConfig, troubleshootTrip, exportLedger, getOffConfig, saveOffConfig, searchOffStores, testOffLogin } from "@/lib/grocery/server";
 import { statusLabel, tripDate } from "@/lib/grocery/format";
 import { type EngineProgress } from "@/lib/grocery/tfjs";
 import { cn } from "@/lib/utils";
@@ -474,7 +474,7 @@ function SettingsPage() {
       </section>
 
       <ExportPanel />
-
+      <OpenFoodPanel />
       <LedgerPanel />
     </main>
   );
@@ -737,6 +737,113 @@ function ExportPanel() {
           Download CSV
         </Button>
       </div>
+    </section>
+  );
+}
+
+function OpenFoodPanel() {
+  const qc = useQueryClient();
+  const cfg = useQuery({ queryKey: ["off-config"], queryFn: () => getOffConfig() });
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [storeQ, setStoreQ] = useState("");
+  useEffect(() => {
+    if (cfg.data?.username) setUsername(cfg.data.username);
+  }, [cfg.data?.username]);
+  const save = useMutation({
+    mutationFn: () =>
+      saveOffConfig({
+        data: { username, password: password || undefined },
+      }),
+    onSuccess: () => {
+      toast.success("Open Food Facts account saved");
+      setPassword("");
+      void qc.invalidateQueries({ queryKey: ["off-config"] });
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not save"),
+  });
+  const test = useMutation({
+    mutationFn: () => testOffLogin(),
+    onSuccess: (res) => toast.success(`Signed in as ${res.username}`),
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Login failed"),
+  });
+  const stores = useQuery({
+    queryKey: ["off-stores", storeQ],
+    queryFn: () => searchOffStores({ data: storeQ }),
+    enabled: storeQ.trim().length >= 3,
+  });
+  const pick = useMutation({
+    mutationFn: (hit: { osmId: number; osmType: "NODE" | "WAY" | "RELATION"; name: string }) =>
+      saveOffConfig({ data: { osmId: hit.osmId, osmType: hit.osmType, osmName: hit.name } }),
+    onSuccess: (res) => {
+      toast.success(`Shop set to ${res.osmName?.split(",")[0]}`);
+      void qc.invalidateQueries({ queryKey: ["off-config"] });
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Could not save shop"),
+  });
+  return (
+    <section className="mt-10 rounded-2xl bg-surface p-5 shadow-[var(--shadow-border)]">
+      <h2 className="font-display text-2xl">Open Food Facts</h2>
+      <p className="mt-1 text-sm text-muted">
+        Same account as{" "}
+        <a className="underline-offset-2 hover:underline" href="https://world.openfoodfacts.org" target="_blank" rel="noreferrer">
+          openfoodfacts.org
+        </a>
+        . Username, not email. Trip → More sends the till photo as proof of what you paid, plus each line (name, barcode if any, AED). Card/loyalty boxes from the till read are blacked out first (footer fallback if none). A check on the photo means it was already sent. Shelf labels are not sent. Pick the OSM shop so the receipt is tied to that store.
+      </p>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <label className="text-xs text-muted">
+          Username
+          <Input className="mt-1" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="off" />
+        </label>
+        <label className="text-xs text-muted">
+          Password {cfg.data?.hasPassword ? "(saved)" : ""}
+          <Input
+            className="mt-1"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder={cfg.data?.hasPassword ? "Leave blank to keep" : ""}
+          />
+        </label>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button type="button" onClick={() => save.mutate()} disabled={save.isPending}>
+          {save.isPending ? "Saving…" : "Save account"}
+        </Button>
+        <Button type="button" variant="secondary" onClick={() => test.mutate()} disabled={test.isPending}>
+          {test.isPending ? "Checking…" : "Test login"}
+        </Button>
+      </div>
+      <label className="mt-5 block text-xs text-muted">
+        Shop on the map (UAE)
+        <Input
+          className="mt-1"
+          value={storeQ}
+          onChange={(e) => setStoreQ(e.target.value)}
+          placeholder="Lulu Al Wahda Abu Dhabi"
+        />
+      </label>
+      {cfg.data?.osmName ? (
+        <p className="mt-2 text-sm">Using {cfg.data.osmName.split(",")[0]}</p>
+      ) : (
+        <p className="mt-2 text-sm text-muted">No shop picked yet.</p>
+      )}
+      {(stores.data ?? []).length > 0 ? (
+        <ul className="mt-2 space-y-1">
+          {(stores.data ?? []).map((hit) => (
+            <li key={`${hit.osmType}-${hit.osmId}`}>
+              <button
+                type="button"
+                className="w-full truncate rounded-lg px-3 py-2 text-left text-sm hover:bg-elevated"
+                onClick={() => pick.mutate(hit)}
+              >
+                {hit.name}
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
     </section>
   );
 }

@@ -103,6 +103,7 @@ function emptyReceipt(): ReceiptExtraction {
     total: null,
     currency: null,
     rawText: "",
+    piiBoxes: [],
   };
 }
 

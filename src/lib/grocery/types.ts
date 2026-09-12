@@ -76,6 +76,7 @@ export type ScanShot = {
   lastRead: LabelExtraction | ReceiptExtraction | null;
   createdAt: string;
   storeName?: string | null;
+  sharedAt?: string | null;
 };
 
 export type LabelExtraction = {
@@ -105,6 +106,14 @@ export type ReceiptLine = {
   linePrice: number | null;
 };
 
+export type PiiBox = {
+  kind: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
 export type ReceiptExtraction = {
   storeName: string | null;
   storeLocation: string | null;
@@ -117,6 +126,7 @@ export type ReceiptExtraction = {
   total: number | null;
   currency: string | null;
   rawText: string;
+  piiBoxes: PiiBox[];
 };
 
 export type CollatedItem = {

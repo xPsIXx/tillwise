@@ -193,7 +193,45 @@ function asReceipt(obj: Record<string, unknown>): ReceiptExtraction {
     total: num(obj.total),
     currency: str(obj.currency),
     rawText: str(obj.raw_text) ?? str(obj.rawText) ?? "",
+    piiBoxes: asPiiBoxes(obj.pii ?? obj.pii_boxes ?? obj.piiBoxes),
   };
+}
+
+function asPiiBoxes(raw: unknown): ReceiptExtraction["piiBoxes"] {
+  if (!Array.isArray(raw)) return [];
+  const boxes: ReceiptExtraction["piiBoxes"] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    let x = num(o.x);
+    let y = num(o.y);
+    let w = num(o.w) ?? num(o.width);
+    let h = num(o.h) ?? num(o.height);
+    if (x == null || y == null || w == null || h == null) continue;
+    if (w <= 0 || h <= 0) continue;
+    const max = Math.max(x, y, w, h);
+    if (max > 1.5 && max <= 100) {
+      x /= 100;
+      y /= 100;
+      w /= 100;
+      h /= 100;
+    } else if (max > 100) {
+      continue;
+    }
+    if (w * h > 0.45) continue;
+    boxes.push({
+      kind: str(o.kind) ?? "other",
+      x: clamp01(x),
+      y: clamp01(y),
+      w: clamp01(w),
+      h: clamp01(h),
+    });
+  }
+  return boxes;
+}
+
+function clamp01(n: number) {
+  return Math.min(1, Math.max(0, n));
 }
 
 function parseJsonList(text: string, keys: string[]): Record<string, unknown>[] {
@@ -346,6 +384,7 @@ export async function readReceiptImages(
     timeoutMs: n > 1 ? 180_000 : undefined,
     prompt: `You are given ${n} grocery receipt / till slip photo${n === 1 ? "" : "s"}, in order as Image 1${n > 1 ? ` through Image ${n}` : ""}. Each photo may be only a portion of a long tape.
 ${rules}
+Also return pii on each receipt: boxes of shopper personal data on THAT photo as fractions 0–1 (top-left origin): { "kind": "card"|"loyalty"|"phone"|"name"|"qr"|"other", "x", "y", "w", "h" }. Box PAN/last-4, auth, loyalty/member and its barcode, shopper phone/name, app QR. Do not box store name, item lines, or totals. Empty array if none.
 Return JSON: { "receipts": [ { "index": 1, ...fields }, ... ] }
 receipts.length MUST equal ${n}. index is 1-based and matches the image number. One object per photo.`,
   });
@@ -419,6 +458,7 @@ function mergePortionsLocally(portions: ReceiptExtraction[]): ReceiptExtraction 
     total: last?.total ?? null,
     currency: last?.currency ?? "AED",
     rawText: portions.map((p) => p.rawText).filter(Boolean).join("\n"),
+    piiBoxes: [],
   };
 }
 

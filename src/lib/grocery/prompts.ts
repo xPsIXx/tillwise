@@ -52,10 +52,14 @@ quantity_unit like ea, pack, bunch, carton, bottle or null.
 Prices are numbers only. Currency like AED, USD. raw_text is the visible text concatenated.`,
   receipt: `Read every visible line even if the print is faint. If the receipt is cut off, set is_partial true and portion_hint to top, middle, or bottom.
 Each receipt object keys:
-store_name, store_location, datetime, is_partial, portion_hint, items, subtotal, tax, total, currency, raw_text.
+store_name, store_location, datetime, is_partial, portion_hint, items, subtotal, tax, total, currency, raw_text, pii.
 Each item: name, quantity, quantity_unit, weight_value, weight_unit, unit_price, line_price.
 unit_price is the per-unit or per-kg rate when printed (often next to weight); line_price is the charged amount.
-Ignore ads, loyalty points, and card numbers. Prices are numbers.`,
+Prices are numbers.
+pii is boxes of shopper personal data on THIS photo, as fractions 0–1 of the image (origin top-left). Each: { "kind": "card"|"loyalty"|"phone"|"name"|"qr"|"other", "x": 0, "y": 0, "w": 0, "h": 0 }.
+Box: PAN / last-4, auth code, loyalty or member number and its barcode, shopper phone, shopper name, app QR.
+Do NOT box: store name, CR number, item lines, totals, store header phone.
+If none, pii is [].`,
   stitch: `Merge these OCR results from overlapping portions of ONE grocery receipt.
 Deduplicate lines that appear in more than one portion. Repair names cut off at the edges. Keep a single subtotal/tax/total (from the portion that has them).
 Return JSON with the same shape: store_name, store_location, datetime, is_partial (false if complete), portion_hint ("full"), items, subtotal, tax, total, currency, raw_text.`,

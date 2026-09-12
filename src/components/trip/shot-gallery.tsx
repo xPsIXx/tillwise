@@ -1,3 +1,4 @@
+import { BadgeCheck } from "lucide-react";
 import type { ScanShot } from "@/lib/grocery/types";
 import { tagForShot, tagTone } from "@/lib/grocery/shot-status";
 import { cn } from "@/lib/utils";
@@ -37,6 +38,14 @@ export function ShotGallery({
                 >
                   {shot.kind === "receipt" ? "Till" : "Label"}
                 </span>
+                {shot.sharedAt ? (
+                  <span
+                    className="absolute right-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-full bg-accent text-bg"
+                    title="Sent to Open Prices"
+                  >
+                    <BadgeCheck className="h-3.5 w-3.5" />
+                  </span>
+                ) : null}
                 <span
                   className={cn(
                     "absolute bottom-1.5 left-1.5 right-1.5 flex items-center justify-between gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium",
