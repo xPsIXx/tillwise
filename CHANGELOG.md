@@ -4,6 +4,10 @@ All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
 ## Unreleased
 
+## 0.3.18 — 2026-09-12
+
+- Docker build: extra `)}` on the trip edit sheet. Header version is v0.3.18. Catalog on Stats from 0.3.17 is in this image.
+
 ## 0.3.17 — 2026-09-12
 
 - Stats: Catalog (search name/barcode, sort cheapest/rising/recent, shops + history, CSV). Spend is a separate view.

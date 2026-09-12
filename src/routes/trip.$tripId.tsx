@@ -1118,7 +1118,6 @@ function TripPage() {
           </form>
         </div>
       )}
-      )}
       {adding && (
         <div
           className="fixed inset-0 z-40 grid place-items-end bg-bg/50 p-4 sm:place-items-center"
