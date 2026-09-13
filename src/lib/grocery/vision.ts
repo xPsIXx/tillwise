@@ -67,18 +67,23 @@ async function chat(opts: {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (endpoint.apiKey) headers.Authorization = `Bearer ${endpoint.apiKey}`;
 
-  const run = async () =>
+  const run = async (payload: Record<string, unknown>) =>
     fetch(endpoint.url, {
       method: "POST",
       headers,
-      body: JSON.stringify(body),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(opts.timeoutMs ?? endpoint.timeoutMs),
     });
 
   let res: Response;
   try {
-    res = await run();
-    if (!res.ok) res = await run();
+    res = await run(body);
+    if ((res.status === 400 || res.status === 422) && body.response_format) {
+      delete body.response_format;
+      res = await run(body);
+    } else if (!res.ok) {
+      res = await run(body);
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : "network error";
     return { ok: false, error: `Could not reach the model (${msg}).` };
@@ -87,32 +92,108 @@ async function chat(opts: {
     return { ok: false, error: `Could not read the photo (${res.status}).` };
   }
 
-  const json = (await res.json()) as {
-    choices?: { message?: { content?: string } }[];
+  const json = (await res.json().catch(() => ({}))) as {
+    choices?: { message?: { content?: unknown }; finish_reason?: string }[];
   };
-  const text = json.choices?.[0]?.message?.content ?? "";
+  const text = messageText(json.choices?.[0]?.message?.content);
   if (!text.trim()) return { ok: false, error: "The reader returned an empty result." };
   return { ok: true, text };
 }
 
-function parseJson(text: string): Record<string, unknown> | null {
-  const trimmed = text.trim();
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const raw = fenced?.[1] ?? trimmed;
-  try {
-    return JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    const start = raw.indexOf("{");
-    const end = raw.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      try {
-        return JSON.parse(raw.slice(start, end + 1)) as Record<string, unknown>;
-      } catch {
-        return null;
-      }
-    }
-    return null;
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (part && typeof part === "object") {
+          const rec = part as Record<string, unknown>;
+          if (typeof rec.text === "string") return rec.text;
+          if (typeof rec.content === "string") return rec.content;
+        }
+        return "";
+      })
+      .join("");
   }
+  if (content && typeof content === "object" && typeof (content as { text?: unknown }).text === "string") {
+    return (content as { text: string }).text;
+  }
+  return "";
+}
+
+function parseJson(text: string): Record<string, unknown> | null {
+  const stripped = text
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/<\|[^|]*\|>/g, "")
+    .trim();
+  const fenced = stripped.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const raw = (fenced?.[1] ?? stripped).trim();
+  const parsed = tryParse(raw) ?? tryParse(sliceObject(raw)) ?? tryParse(repairJson(sliceObject(raw) ?? raw));
+  if (parsed == null) return null;
+  if (Array.isArray(parsed)) {
+    return { receipts: parsed, items: parsed };
+  }
+  if (typeof parsed === "object") return parsed as Record<string, unknown>;
+  return null;
+}
+
+function tryParse(raw: string | null): unknown {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    try {
+      return JSON.parse(raw.replace(/,\s*([}\]])/g, "$1"));
+    } catch {
+      return null;
+    }
+  }
+}
+
+function sliceObject(raw: string): string | null {
+  const startObj = raw.indexOf("{");
+  const startArr = raw.indexOf("[");
+  const start =
+    startObj < 0 ? startArr : startArr < 0 ? startObj : Math.min(startObj, startArr);
+  if (start < 0) return null;
+  const open = raw[start];
+  const close = open === "[" ? "]" : "}";
+  const end = raw.lastIndexOf(close);
+  if (end <= start) return raw.slice(start);
+  return raw.slice(start, end + 1);
+}
+
+function repairJson(raw: string | null): string | null {
+  if (!raw) return null;
+  let s = raw.trim();
+  let inStr = false;
+  let esc = false;
+  for (const c of s) {
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === "\"") inStr = false;
+    } else if (c === "\"") inStr = true;
+  }
+  if (inStr) s += "\"";
+  const stack: string[] = [];
+  inStr = false;
+  esc = false;
+  for (const c of s) {
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === "\"") inStr = false;
+      continue;
+    }
+    if (c === "\"") inStr = true;
+    else if (c === "{") stack.push("}");
+    else if (c === "[") stack.push("]");
+    else if (c === "}" || c === "]") stack.pop();
+  }
+  s = s.replace(/,\s*$/, "");
+  while (stack.length) s += stack.pop();
+  return s;
 }
 
 function str(v: unknown): string | null {
@@ -160,6 +241,21 @@ function asLabel(obj: Record<string, unknown>): LabelExtraction {
   };
 }
 
+function pickReceiptObject(obj: Record<string, unknown>): Record<string, unknown> | null {
+  const receipts = obj.receipts;
+  if (Array.isArray(receipts) && receipts[0] && typeof receipts[0] === "object") {
+    return receipts[0] as Record<string, unknown>;
+  }
+  const one = obj.receipt;
+  if (one && typeof one === "object" && !Array.isArray(one)) {
+    return one as Record<string, unknown>;
+  }
+  if ("store_name" in obj || "storeName" in obj || "items" in obj || "total" in obj || "raw_text" in obj || "rawText" in obj) {
+    return obj;
+  }
+  return obj;
+}
+
 function asLine(obj: Record<string, unknown>): ReceiptLine {
   return {
     name: str(obj.name) ?? "Item",
@@ -173,7 +269,11 @@ function asLine(obj: Record<string, unknown>): ReceiptLine {
 }
 
 function asReceipt(obj: Record<string, unknown>): ReceiptExtraction {
-  const itemsRaw = Array.isArray(obj.items) ? obj.items : [];
+  const itemsRaw = Array.isArray(obj.items)
+    ? obj.items
+    : Array.isArray(obj.lines)
+      ? obj.lines
+      : [];
   const hint = str(obj.portion_hint) ?? str(obj.portionHint);
   const portionHint =
     hint === "top" || hint === "middle" || hint === "bottom" || hint === "full"
@@ -329,7 +429,7 @@ export async function readLabelImages(
     ? opts.promptOverride.trim()
     : withShopNote(pack.label, pack, opts?.storeName);
   const result = await chat({
-    maxTokens: Math.min(4000, 700 * n + 400),
+    maxTokens: Math.min(12_000, 1_500 * n + 800),
     images: photos.map((p) => p.imageDataUrl),
     detail: opts?.detail ?? "high",
     provider: opts?.provider ?? "local",
@@ -376,13 +476,19 @@ export async function readReceiptImages(
     ? opts.promptOverride.trim()
     : withShopNote(pack.receipt, pack, opts?.storeName);
   const result = await chat({
-    maxTokens: Math.min(5000, 1100 * n + 400),
+    maxTokens: Math.min(24_000, 16_000 + 4_000 * Math.max(0, n - 1)),
     images: imageDataUrls,
     detail: opts?.detail ?? "high",
     provider: opts?.provider ?? "local",
     task: "vision",
-    timeoutMs: n > 1 ? 180_000 : undefined,
-    prompt: `You are given ${n} grocery receipt / till slip photo${n === 1 ? "" : "s"}, in order as Image 1${n > 1 ? ` through Image ${n}` : ""}. Each photo may be only a portion of a long tape.
+    timeoutMs: 180_000,
+    prompt:
+      n === 1
+        ? `You are given one grocery receipt / till slip photo. It may be only a portion of a long tape.
+${rules}
+Also return pii: boxes of shopper personal data as fractions 0–1 (top-left origin): { "kind": "card"|"loyalty"|"phone"|"name"|"qr"|"other", "x", "y", "w", "h" }. Box PAN/last-4, auth, loyalty/member and its barcode, shopper phone/name, app QR. Do not box store name, item lines, or totals. Empty array if none.
+Return one JSON object with the receipt fields (not wrapped in an array).`
+        : `You are given ${n} grocery receipt / till slip photos, in order as Image 1 through Image ${n}. Each photo may be only a portion of a long tape.
 ${rules}
 Also return pii on each receipt: boxes of shopper personal data on THAT photo as fractions 0–1 (top-left origin): { "kind": "card"|"loyalty"|"phone"|"name"|"qr"|"other", "x", "y", "w", "h" }. Box PAN/last-4, auth, loyalty/member and its barcode, shopper phone/name, app QR. Do not box store name, item lines, or totals. Empty array if none.
 Return JSON: { "receipts": [ { "index": 1, ...fields }, ... ] }
@@ -391,10 +497,12 @@ receipts.length MUST equal ${n}. index is 1-based and matches the image number. 
   if (!result.ok) return imageDataUrls.map(() => result);
   if (n === 1) {
     const obj = parseJson(result.text);
-    if (!obj) return [{ ok: false, error: "Could not parse the receipt." }];
-    const first = Array.isArray(obj.receipts) && obj.receipts[0] && typeof obj.receipts[0] === "object"
-      ? (obj.receipts[0] as Record<string, unknown>)
-      : obj;
+    if (!obj) {
+      console.warn("[receipt] unparseable model text", result.text.slice(0, 400));
+      return [{ ok: false, error: "Could not parse the receipt." }];
+    }
+    const first = pickReceiptObject(obj);
+    if (!first) return [{ ok: false, error: "Could not parse the receipt." }];
     return [{ ok: true, data: asReceipt(first) }];
   }
   const rows = parseJsonList(result.text, ["receipts"]);
@@ -420,7 +528,7 @@ export async function stitchReceipts(
   const pack = await loadPromptPack();
   const rules = withShopNote(pack.stitch, pack, portions.find((p) => p.storeName)?.storeName);
   const result = await chat({
-    maxTokens: 1800,
+    maxTokens: 8_000,
     provider: provider ?? "local",
     task: "text",
     prompt: `${rules}
@@ -641,7 +749,7 @@ export async function proposeCollation(
   const pack = await loadPromptPack();
   const rules = withShopNote(pack.collate, pack, receipt?.storeName);
   const result = await chat({
-    maxTokens: 1200,
+    maxTokens: 4_000,
     provider: useProvider,
     task: "text",
     prompt: `${rules}
@@ -721,7 +829,7 @@ export async function mapCommonNames(
   if (unique.length === 0) return { ok: true, mappings: [] };
   const pack = await loadPromptPack();
   const result = await chat({
-    maxTokens: 1800,
+    maxTokens: 4_000,
     provider: provider ?? "byok",
     task: "text",
     prompt: `${pack.common}

@@ -2,6 +2,10 @@
 
 All notable Tillwise releases. Dates are when the tag landed on GitHub.
 
+## 0.3.25 — 2026-09-13
+
+- Receipt read: 16k output tokens for a till photo (24k if several in one call). Recover truncated JSON. Skip `json_object` if BYOK rejects it.
+
 ## 0.3.24 — 2026-09-12
 
 - Open Prices: barcoded lines send as products (no `price_per`). Loose produce uses an OFF category tag and AED/kg when we have a unit price. Unknown names are skipped instead of rejected by their API.
